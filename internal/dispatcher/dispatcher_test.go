@@ -28,7 +28,7 @@ func TestPeekSNI_RealClientHello(t *testing.T) {
 		}
 		defer conn.Close()
 
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		capturedSNI, capturedBuf, _ = PeekSNI(conn)
 	}()
 
@@ -44,7 +44,7 @@ func TestPeekSNI_RealClientHello(t *testing.T) {
 	})
 	// Start handshake (will fail since server isn't doing TLS, but that's fine —
 	// we only need the ClientHello to be sent).
-	go tlsConn.Handshake()
+	go func() { _ = tlsConn.Handshake() }()
 
 	// Wait for server to capture.
 	select {
@@ -117,7 +117,7 @@ func TestPrefixConn(t *testing.T) {
 	prefix := []byte("HELLO")
 
 	go func() {
-		client.Write([]byte(" WORLD"))
+		_, _ = client.Write([]byte(" WORLD"))
 		client.Close()
 	}()
 

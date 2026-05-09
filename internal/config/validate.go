@@ -64,11 +64,9 @@ func (v *validator) validateService(name string, svc *Service) {
 		}
 		// tls_key is only required in file mode — in directory mode keys are
 		// discovered automatically alongside their matching .crt/.pem files.
-		if svc.TLSKey == "" && svc.TLSCert != "" {
-			// We can't stat the path at validation time (config may be
-			// validated before deployment), so we accept missing tls_key
-			// and let server.loadCertificates handle the error at runtime.
-		}
+		// We can't stat the path at validation time (config may be validated
+		// before deployment), so we accept missing tls_key and let
+		// server.loadCertificates handle the error at runtime.
 	}
 
 	if len(svc.Routes) == 0 {

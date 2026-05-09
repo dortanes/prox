@@ -15,18 +15,18 @@ func Relay(client, upstream net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		io.Copy(upstream, client)
+		_, _ = io.Copy(upstream, client)
 		// Signal to upstream that no more data is coming.
 		if tc, ok := upstream.(halfCloser); ok {
-			tc.CloseWrite()
+			_ = tc.CloseWrite()
 		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		io.Copy(client, upstream)
+		_, _ = io.Copy(client, upstream)
 		if tc, ok := client.(halfCloser); ok {
-			tc.CloseWrite()
+			_ = tc.CloseWrite()
 		}
 	}()
 

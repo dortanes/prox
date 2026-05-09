@@ -87,12 +87,15 @@ func (d *Dispatcher) acceptLoop(ln net.Listener, httpLn *chanListener) {
 
 func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 	// Deadline for the SNI peek — don't hang forever on slow/malicious clients.
-	conn.SetReadDeadline(time.Now().Add(sniPeekTimeout))
+	if err := conn.SetReadDeadline(time.Now().Add(sniPeekTimeout)); err != nil {
+		conn.Close()
+		return
+	}
 
 	sni, buf, err := PeekSNI(conn)
 
 	// Clear the deadline for subsequent I/O.
-	conn.SetReadDeadline(time.Time{})
+	_ = conn.SetReadDeadline(time.Time{})
 
 	if err != nil {
 		slog.Debug("sni peek failed, closing connection",
