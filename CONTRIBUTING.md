@@ -49,7 +49,7 @@ Open an issue with:
 
 ```
 config.json5 ─┐
-  web.json5 ──┤ Load + Merge → Validate → Build Router + Actions → Start Listeners
+  web.json5 ──┤ Load + Merge → Validate → Build Router + Actions + Dispatcher → Start Listeners
   api.json5 ──┘                                                          │
                                                            File watcher / SIGHUP
                                                                          │
@@ -62,8 +62,9 @@ prox/
 ├── internal/
 │   ├── config/         Config types, loader, validator
 │   ├── server/         HTTP(S) lifecycle, hot reload
-│   ├── router/         Path + method matching
-│   ├── action/         Handlers: proxy, static, serve
+│   ├── dispatcher/     L4 TCP dispatching (SNI peek, pass-through relay)
+│   ├── router/         L7 domain + path + method matching
+│   ├── action/         Handlers: proxy, static, serve, pass
 │   ├── resource/       Content resolver
 │   └── watcher/        File change detection (polling)
 ├── Dockerfile

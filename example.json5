@@ -1,5 +1,5 @@
 {
-  // A web app with API backend and static frontend.
+  // A web app with domain-based routing, API backend, and static frontend.
   services: {
     web: {
       listen: ":8080",
@@ -25,6 +25,36 @@
         {
           match: { path: "/*" },
           action: "frontend",
+        },
+      ],
+    },
+
+    // Mixed L4/L7 gateway — single listener, mixed pass-through and HTTP routes.
+    // Routes are evaluated in order. "pass" routes relay raw TCP (no TLS termination).
+    // Other routes go through TLS termination → HTTP routing as usual.
+    gateway: {
+      listen: ":443",
+      tls: true,
+      tls_cert: "/etc/prox/certs/",
+      routes: [
+        // L4: TCP pass-through — relay raw TLS to backend (no termination).
+        {
+          match: { domain: "*.cdn.example.com" },
+          action: {
+            type: "pass",
+            upstream: "10.0.0.5:3504",
+          },
+        },
+
+        // L7: normal HTTPS route — TLS terminated, then HTTP handling.
+        {
+          match: { domain: "*.example.com" },
+          action: {
+            type: "static",
+            status: 200,
+            headers: { "Content-Type": "text/plain" },
+            body_ref: { text: "Hello from {domain}!" },
+          },
         },
       ],
     },

@@ -1,0 +1,41 @@
+package dispatcher
+
+import (
+	"io"
+	"net"
+	"sync"
+)
+
+// Relay copies data bidirectionally between two connections.
+// It blocks until both directions finish (EOF or error).
+// Caller is responsible for closing both connections.
+func Relay(client, upstream net.Conn) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		io.Copy(upstream, client)
+		// Signal to upstream that no more data is coming.
+		if tc, ok := upstream.(halfCloser); ok {
+			tc.CloseWrite()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		io.Copy(client, upstream)
+		if tc, ok := client.(halfCloser); ok {
+			tc.CloseWrite()
+		}
+	}()
+
+	wg.Wait()
+}
+
+// halfCloser is implemented by connections that support half-close
+// (e.g. *net.TCPConn). This signals EOF to the peer without closing
+// the read side, enabling graceful shutdown of bidirectional streams.
+type halfCloser interface {
+	CloseWrite() error
+}

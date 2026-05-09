@@ -314,7 +314,7 @@ func TestLoad_ExampleConfig(t *testing.T) {
 	}
 }
 
-func TestLoad_TLSRequiresCertAndKey(t *testing.T) {
+func TestLoad_TLSRequiresCert(t *testing.T) {
 	raw := `{
 		"services": {
 			"secure": {
@@ -335,13 +335,10 @@ func TestLoad_TLSRequiresCertAndKey(t *testing.T) {
 
 	_, err := Load([]byte(raw))
 	if err == nil {
-		t.Fatal("expected error when tls is true but cert/key missing")
+		t.Fatal("expected error when tls is true but cert missing")
 	}
 	if !strings.Contains(err.Error(), "tls_cert") {
 		t.Errorf("error should mention tls_cert, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "tls_key") {
-		t.Errorf("error should mention tls_key, got: %v", err)
 	}
 }
 

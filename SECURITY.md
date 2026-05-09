@@ -18,7 +18,8 @@ Include:
 Security issues in the following areas are in scope:
 
 - Request routing bypass (reaching unintended upstreams)
+- L4 dispatcher bypass (SNI spoofing, route order violations)
 - Path traversal in file serving (`serve` action)
 - TLS configuration weaknesses
 - Config injection or parsing vulnerabilities
-- Denial of service via crafted requests or configs
+- Denial of service via crafted requests, TLS ClientHello, or configs

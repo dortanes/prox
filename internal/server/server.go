@@ -6,13 +6,18 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/dortanes/prox/internal/action"
 	"github.com/dortanes/prox/internal/config"
+	"github.com/dortanes/prox/internal/dispatcher"
 	"github.com/dortanes/prox/internal/resource"
 	"github.com/dortanes/prox/internal/router"
 )
@@ -31,10 +36,10 @@ type Group struct {
 }
 
 type managedServer struct {
-	name    string
-	server  *http.Server
-	tlsCert string
-	tlsKey  string
+	name     string
+	server   *http.Server
+	dispatch *dispatcher.Dispatcher // non-nil when service has "pass" routes
+	rawLn    net.Listener           // raw TCP listener (when dispatcher is used)
 }
 
 // Build creates a server group from the loaded configuration.
@@ -53,7 +58,7 @@ func Build(cfg *config.Config) (*Group, error) {
 	}
 
 	for name, svc := range cfg.Services {
-		srv, handler, err := buildServer(name, svc, registry)
+		srv, handler, err := buildServer(name, svc, cfg, registry)
 		if err != nil {
 			return nil, fmt.Errorf("building service %q: %w", name, err)
 		}
@@ -90,6 +95,16 @@ func (g *Group) Reload(cfg *config.Config) error {
 
 		rt := router.New(svc.Routes)
 		handler.Swap(rt, registry)
+
+		// Atomically swap dispatcher routes if this server has one.
+		for _, ms := range g.servers {
+			if ms.name == name && ms.dispatch != nil {
+				routes := buildDispatcherRoutes(svc, cfg)
+				ms.dispatch.SwapRoutes(routes)
+				slog.Info("dispatcher routes reloaded", "service", name, "routes", len(routes))
+			}
+		}
+
 		swapped++
 
 		slog.Info("service reloaded", "service", name)
@@ -108,7 +123,7 @@ func (g *Group) Reload(cfg *config.Config) error {
 	return nil
 }
 
-func buildServer(name string, svc *config.Service, registry *action.Registry) (*managedServer, *swappableHandler, error) {
+func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry) (*managedServer, *swappableHandler, error) {
 	rt := router.New(svc.Routes)
 	handler := newSwappableHandler(name, rt, registry)
 
@@ -120,23 +135,181 @@ func buildServer(name string, svc *config.Service, registry *action.Registry) (*
 		IdleTimeout:  idleTimeout,
 	}
 
+	ms := &managedServer{
+		name:   name,
+		server: srv,
+	}
+
 	if svc.TLS {
-		srv.TLSConfig = &tls.Config{
+		tlsCfg := &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			CurvePreferences: []tls.CurveID{
 				tls.X25519,
 				tls.CurveP256,
 			},
 		}
+
+		certs, err := loadCertificates(svc.TLSCert, svc.TLSKey)
+		if err != nil {
+			return nil, nil, fmt.Errorf("loading TLS certificates: %w", err)
+		}
+
+		tlsCfg.Certificates = certs
+		srv.TLSConfig = tlsCfg
+
+		slog.Info("loaded TLS certificates",
+			"service", name,
+			"count", len(certs),
+		)
 	}
 
-	ms := &managedServer{
-		name:    name,
-		server:  srv,
-		tlsCert: svc.TLSCert,
-		tlsKey:  svc.TLSKey,
+	// Check if this service has any "pass" routes — if so, build a dispatcher.
+	dispatchRoutes := buildDispatcherRoutes(svc, cfg)
+	if len(dispatchRoutes) > 0 {
+		ms.dispatch = dispatcher.New(dispatchRoutes)
+
+		passCount := 0
+		for _, r := range dispatchRoutes {
+			if r.IsPass {
+				passCount++
+			}
+		}
+		slog.Info("l4 dispatcher enabled",
+			"service", name,
+			"total_routes", len(dispatchRoutes),
+			"pass_routes", passCount,
+		)
 	}
+
 	return ms, handler, nil
+}
+
+// buildDispatcherRoutes compiles L4 routes for the dispatcher.
+// Returns nil if the service has no "pass" routes (no dispatcher needed).
+func buildDispatcherRoutes(svc *config.Service, cfg *config.Config) []*dispatcher.Route {
+	hasPass := false
+	for _, route := range svc.Routes {
+		if resolveActionType(route, cfg) == config.ActionTypePass {
+			hasPass = true
+			break
+		}
+	}
+	if !hasPass {
+		return nil
+	}
+
+	// Build all routes (not just pass routes) — order matters for correct dispatching.
+	routes := make([]*dispatcher.Route, 0, len(svc.Routes))
+	for _, route := range svc.Routes {
+		if route.Match == nil || route.Match.Domain == "" {
+			continue // L4 dispatcher can only match on domain (SNI)
+		}
+
+		dr := &dispatcher.Route{
+			Domain:         route.Match.Domain,
+			DomainSegments: strings.Split(strings.ToLower(route.Match.Domain), "."),
+		}
+
+		if act := resolveAction(route, cfg); act != nil && act.Type == config.ActionTypePass {
+			dr.IsPass = true
+			dr.Upstream = act.Upstream
+		}
+
+		routes = append(routes, dr)
+	}
+
+	return routes
+}
+
+// resolveAction returns the Action for a route — either from the named
+// reference in cfg.Actions or the inline definition.
+func resolveAction(route *config.Route, cfg *config.Config) *config.Action {
+	if route.Action.Inline != nil {
+		return route.Action.Inline
+	}
+	if route.Action.Name != "" {
+		return cfg.Actions[route.Action.Name]
+	}
+	return nil
+}
+
+// resolveActionType returns the ActionType for a route.
+func resolveActionType(route *config.Route, cfg *config.Config) config.ActionType {
+	if act := resolveAction(route, cfg); act != nil {
+		return act.Type
+	}
+	return ""
+}
+
+// loadCertificates loads TLS certificate+key pairs.
+// If certPath is a directory, all .crt/.pem + matching .key pairs are loaded.
+// If certPath is a file, a single pair is loaded using certPath and keyPath.
+func loadCertificates(certPath, keyPath string) ([]tls.Certificate, error) {
+	info, err := os.Stat(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat %q: %w", certPath, err)
+	}
+
+	if !info.IsDir() {
+		// Single file mode — classic tls_cert + tls_key.
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			return nil, fmt.Errorf("loading keypair (%s, %s): %w", certPath, keyPath, err)
+		}
+		return []tls.Certificate{cert}, nil
+	}
+
+	// Directory mode — scan for all cert+key pairs.
+	return loadCertificatesFromDir(certPath)
+}
+
+// loadCertificatesFromDir scans a directory for certificate+key pairs.
+// Matches by basename: "example.com.crt" pairs with "example.com.key".
+// Supported extensions: .crt, .pem (cert) and .key (key).
+func loadCertificatesFromDir(dir string) ([]tls.Certificate, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("reading cert directory %q: %w", dir, err)
+	}
+
+	// Collect all cert files.
+	certFiles := make(map[string]string) // basename (no ext) → full path
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if ext == ".crt" || ext == ".pem" {
+			base := strings.TrimSuffix(e.Name(), ext)
+			certFiles[base] = filepath.Join(dir, e.Name())
+		}
+	}
+
+	if len(certFiles) == 0 {
+		return nil, fmt.Errorf("no certificate files (.crt, .pem) found in %q", dir)
+	}
+
+	// Match each cert with its key.
+	var certs []tls.Certificate
+	for base, certFile := range certFiles {
+		keyFile := filepath.Join(dir, base+".key")
+		if _, err := os.Stat(keyFile); err != nil {
+			return nil, fmt.Errorf("no matching key file for %q (expected %s)", certFile, keyFile)
+		}
+
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("loading keypair (%s, %s): %w", certFile, keyFile, err)
+		}
+
+		slog.Debug("loaded certificate pair",
+			"cert", certFile,
+			"key", keyFile,
+		)
+		certs = append(certs, cert)
+	}
+
+	return certs, nil
 }
 
 // ListenAndServe starts all servers and blocks until ctx is cancelled.
@@ -145,19 +318,12 @@ func (g *Group) ListenAndServe(ctx context.Context) error {
 
 	for _, ms := range g.servers {
 		go func(ms *managedServer) {
-			slog.Info("starting server",
-				"service", ms.name,
-				"addr", ms.server.Addr,
-				"tls", ms.server.TLSConfig != nil,
-			)
-
 			var err error
-			if ms.server.TLSConfig != nil {
-				err = ms.server.ListenAndServeTLS(ms.tlsCert, ms.tlsKey)
+			if ms.dispatch != nil {
+				err = ms.serveWithDispatcher()
 			} else {
-				err = ms.server.ListenAndServe()
+				err = ms.serveDirect()
 			}
-
 			if err != nil && err != http.ErrServerClosed {
 				errCh <- fmt.Errorf("service %q: %w", ms.name, err)
 			}
@@ -176,6 +342,48 @@ func (g *Group) ListenAndServe(ctx context.Context) error {
 	}
 }
 
+// serveDirect starts an HTTP/HTTPS server without L4 dispatching (original path).
+func (ms *managedServer) serveDirect() error {
+	slog.Info("starting server",
+		"service", ms.name,
+		"addr", ms.server.Addr,
+		"tls", ms.server.TLSConfig != nil,
+	)
+
+	if ms.server.TLSConfig != nil {
+		// Certs are pre-loaded in TLSConfig.Certificates.
+		return ms.server.ListenAndServeTLS("", "")
+	}
+	return ms.server.ListenAndServe()
+}
+
+// serveWithDispatcher starts a raw TCP listener, runs the L4 dispatcher,
+// and feeds non-pass connections to the HTTP server via a synthetic listener.
+func (ms *managedServer) serveWithDispatcher() error {
+	ln, err := net.Listen("tcp", ms.server.Addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", ms.server.Addr, err)
+	}
+	ms.rawLn = ln // store for shutdown
+
+	slog.Info("starting server with l4 dispatcher",
+		"service", ms.name,
+		"addr", ms.server.Addr,
+		"tls", ms.server.TLSConfig != nil,
+	)
+
+	// The dispatcher accepts raw TCP, handles pass routes inline,
+	// and returns a synthetic listener for non-pass connections.
+	httpLn := ms.dispatch.Serve(ln)
+
+	if ms.server.TLSConfig != nil {
+		// ServeTLS wraps accepted connections with tls.Server —
+		// the prefixConn replays the peeked ClientHello bytes.
+		return ms.server.ServeTLS(httpLn, "", "")
+	}
+	return ms.server.Serve(httpLn)
+}
+
 // shutdown gracefully stops all servers with a timeout.
 func (g *Group) shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -188,6 +396,12 @@ func (g *Group) shutdown() {
 		go func(ms *managedServer) {
 			defer wg.Done()
 
+			// Close the raw TCP listener first — this unblocks the
+			// dispatcher's acceptLoop so it can drain and exit.
+			if ms.rawLn != nil {
+				ms.rawLn.Close()
+			}
+
 			if err := ms.server.Shutdown(ctx); err != nil {
 				slog.Error("shutdown error",
 					"service", ms.name,
@@ -195,6 +409,11 @@ func (g *Group) shutdown() {
 				)
 			} else {
 				slog.Info("server stopped", "service", ms.name)
+			}
+
+			// Wait for active pass relays to drain.
+			if ms.dispatch != nil {
+				ms.dispatch.Wait()
 			}
 		}(ms)
 	}
@@ -239,7 +458,7 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	snap := h.current.Load()
 
-	actionName := snap.router.Match(r)
+	r, actionName := snap.router.Match(r)
 	if actionName == "" {
 		http.NotFound(w, r)
 		return

@@ -37,9 +37,12 @@ type Route struct {
 
 // Match defines the criteria for a route to activate.
 // Path supports exact matches ("/styles.css") and wildcard prefixes ("/api/*").
+// Domain supports exact matches ("example.com") and wildcard prefixes ("*.example.com").
 // Methods is optional — an empty list matches all HTTP methods.
+// At least one of Path or Domain must be specified.
 type Match struct {
-	Path    string   `json:"path"`
+	Path    string   `json:"path,omitempty"`
+	Domain  string   `json:"domain,omitempty"`
 	Methods []string `json:"methods,omitempty"`
 }
 
@@ -50,6 +53,7 @@ const (
 	ActionTypeProxy  ActionType = "proxy"
 	ActionTypeStatic ActionType = "static"
 	ActionTypeServe  ActionType = "serve"
+	ActionTypePass   ActionType = "pass" // L4 TCP pass-through (no TLS termination)
 )
 
 // Action defines what happens when a route matches.

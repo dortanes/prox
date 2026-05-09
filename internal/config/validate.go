@@ -60,10 +60,14 @@ func (v *validator) validateService(name string, svc *Service) {
 
 	if svc.TLS {
 		if svc.TLSCert == "" {
-			v.addIssue("service %q: tls_cert is required when tls is enabled", name)
+			v.addIssue("service %q: tls_cert is required when tls is enabled (file or directory path)", name)
 		}
-		if svc.TLSKey == "" {
-			v.addIssue("service %q: tls_key is required when tls is enabled", name)
+		// tls_key is only required in file mode — in directory mode keys are
+		// discovered automatically alongside their matching .crt/.pem files.
+		if svc.TLSKey == "" && svc.TLSCert != "" {
+			// We can't stat the path at validation time (config may be
+			// validated before deployment), so we accept missing tls_key
+			// and let server.loadCertificates handle the error at runtime.
 		}
 	}
 
@@ -85,19 +89,32 @@ func (v *validator) validateRoute(svcName string, idx int, route *Route) {
 		return
 	}
 
-	if route.Match.Path == "" {
-		v.addIssue("%s: match.path is required", prefix)
+	if route.Match.Path == "" && route.Match.Domain == "" {
+		v.addIssue("%s: match.path or match.domain is required", prefix)
 	}
 
 	v.validatePath(prefix, route.Match.Path)
+	v.validateDomain(prefix, route.Match.Domain)
 	v.validateMethods(prefix, route.Match.Methods)
 
 	if route.Action.IsEmpty() {
 		v.addIssue("%s: action is required", prefix)
 	} else if route.Action.Name != "" {
 		// After normalization, all refs should be Name-based.
-		if _, ok := v.cfg.Actions[route.Action.Name]; !ok {
+		act, ok := v.cfg.Actions[route.Action.Name]
+		if !ok {
 			v.addIssue("%s: action %q not found in actions", prefix, route.Action.Name)
+		} else if act.Type == ActionTypePass {
+			// Pass routes operate at L4 (pre-TLS) — only domain/SNI matching is available.
+			if route.Match.Path != "" {
+				v.addIssue("%s: pass routes cannot use path matching (L4 operates before HTTP)", prefix)
+			}
+			if len(route.Match.Methods) > 0 {
+				v.addIssue("%s: pass routes cannot use method matching (L4 operates before HTTP)", prefix)
+			}
+			if route.Match.Domain == "" {
+				v.addIssue("%s: pass routes require a domain pattern (SNI matching)", prefix)
+			}
 		}
 	}
 }
@@ -120,6 +137,31 @@ func (v *validator) validatePath(prefix, path string) {
 	}
 }
 
+// validateDomain ensures the domain pattern is well-formed.
+// Supports "*" as a wildcard in any segment position.
+func (v *validator) validateDomain(prefix, domain string) {
+	if domain == "" {
+		return
+	}
+
+	segments := strings.Split(domain, ".")
+	if len(segments) < 2 {
+		v.addIssue("%s: domain must have at least two segments (e.g. example.com)", prefix)
+		return
+	}
+
+	for _, seg := range segments {
+		if seg == "" {
+			v.addIssue("%s: domain has an empty segment (double dot or leading/trailing dot)", prefix)
+			return
+		}
+		// A segment is either a full wildcard "*" or a literal label.
+		// Partial wildcards like "te*st" are not allowed.
+		if seg != "*" && strings.Contains(seg, "*") {
+			v.addIssue("%s: partial wildcard %q is not allowed — use a full \"*\" segment", prefix, seg)
+		}
+	}
+}
 
 func (v *validator) validateMethods(prefix string, methods []string) {
 	validMethods := map[string]bool{
@@ -141,7 +183,6 @@ func (v *validator) validateMethods(prefix string, methods []string) {
 	}
 }
 
-
 func (v *validator) validateActions() {
 	if len(v.cfg.Actions) == 0 {
 		v.addIssue("no actions defined")
@@ -161,11 +202,13 @@ func (v *validator) validateAction(name string, action *Action) {
 		v.validateStaticAction(name, action)
 	case ActionTypeServe:
 		v.validateServeAction(name, action)
+	case ActionTypePass:
+		v.validatePassAction(name, action)
 	case "":
 		v.addIssue("action %q: type is required", name)
 	default:
-		v.addIssue("action %q: unknown type %q (expected %q, %q, or %q)",
-			name, action.Type, ActionTypeProxy, ActionTypeStatic, ActionTypeServe)
+		v.addIssue("action %q: unknown type %q (expected %q, %q, %q, or %q)",
+			name, action.Type, ActionTypeProxy, ActionTypeStatic, ActionTypeServe, ActionTypePass)
 	}
 }
 
@@ -207,5 +250,11 @@ func (v *validator) validateServeAction(name string, action *Action) {
 		v.addIssue("action %q (serve): root or file is required", name)
 	} else if hasRoot && hasFile {
 		v.addIssue("action %q (serve): root and file are mutually exclusive", name)
+	}
+}
+
+func (v *validator) validatePassAction(name string, action *Action) {
+	if action.Upstream == "" {
+		v.addIssue("action %q (pass): upstream is required", name)
 	}
 }

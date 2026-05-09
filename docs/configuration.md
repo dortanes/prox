@@ -123,10 +123,46 @@ Routes are evaluated in order — first match wins.
 ```json5
 {
   match: {
-    path: "/api/*", // exact or wildcard
-    methods: ["GET", "POST"], // optional, empty = all
+    domain: "*.example.com",       // optional, segment glob
+    path: "/api/*",                // optional if domain set
+    methods: ["GET", "POST"],      // optional, empty = all
   },
-  action: "proxy_to_backend", // string ref to actions map
+  action: "proxy_to_backend",      // string ref to actions map
+}
+```
+
+At least one of `domain` or `path` must be specified.
+
+### Domain matching
+
+Domain patterns use segment-based glob matching. Each `*` matches **exactly one** domain label (like wildcard SSL certificates).
+
+| Pattern | Matches | Does not match |
+|---|---|---|
+| `example.com` | `example.com` | `sub.example.com` |
+| `*.example.com` | `sub.example.com` | `example.com`, `a.b.example.com` |
+| `*.test.example.com` | `api.test.example.com` | `test.example.com` |
+| `test.*.example.com` | `test.staging.example.com` | `test.example.com` |
+| `*.*.example.com` | `a.b.example.com` | `a.example.com`, `a.b.c.example.com` |
+
+Domain matching is **case-insensitive** and ports are stripped automatically (`example.com:443` → `example.com`).
+
+Domain patterns are also used for [L4 dispatching](#l4-dispatching-pass-routes) — the SNI hostname from the TLS ClientHello is matched against the same patterns.
+
+```json5
+// Virtual hosting — one listener, multiple domains.
+{
+  services: {
+    gateway: {
+      listen: ":443",
+      tls: true, tls_cert: "cert.pem", tls_key: "key.pem",
+      routes: [
+        { match: { domain: "api.example.com", path: "/v1/*" }, action: "api" },
+        { match: { domain: "*.cdn.example.com" },              action: "cdn" },
+        { match: { domain: "*.example.com", path: "/*" },      action: "site" },
+      ],
+    },
+  },
 }
 ```
 
@@ -163,6 +199,37 @@ Instead of referencing a named action, you can define one inline:
 | `status`   | int             | ✓        | HTTP status code                            |
 | `headers`  | object          |          | Response headers                            |
 | `body_ref` | string / object |          | Ref to resource or inline `{ text: "..." }` / `{ json: {...} }` |
+
+#### Template variables
+
+Static response bodies can contain `{variable}` placeholders that are interpolated at request time:
+
+| Variable | Description | Example |
+|---|---|---|
+| `{domain}` | Actual request host (no port) | `sub.example.com` |
+| `{domain.pattern}` | Domain pattern from config | `*.example.com` |
+| `{match.domain}` | Captured wildcard value(s) | `sub` |
+| `{path}` | Actual request path | `/api/users` |
+| `{match.path}` | Path pattern from config | `/api/*` |
+| `{method}` | HTTP method | `GET` |
+| `{host}` | Full Host header (with port) | `sub.example.com:443` |
+
+For multiple wildcards, captured values are joined with `.` — e.g. pattern `*.*.example.com` matching `a.b.example.com` gives `{match.domain}` = `a.b`.
+
+```json5
+{
+  match: { domain: "test.*.example.com" },
+  action: {
+    type: "static",
+    status: 200,
+    headers: { "Content-Type": "text/plain" },
+    body_ref: { text: "Env: {match.domain}, full host: {domain}" },
+  },
+}
+// GET http://test.staging.example.com/ → "Env: staging, full host: test.staging.example.com"
+```
+
+Bodies without `{` are served as-is with no overhead.
 
 ### `serve` — File Server
 
@@ -208,6 +275,62 @@ Serves files from a directory or a single file.
   },
 }
 ```
+
+### `pass` — L4 TCP Pass-through
+
+Relays raw TCP connections to an upstream without TLS termination. The proxy peeks the TLS ClientHello to extract the SNI hostname for routing, then forwards all bytes (including the ClientHello) to the upstream. The upstream handles TLS directly.
+
+| Field      | Type   | Required | Description                           |
+| ---------- | ------ | -------- | ------------------------------------- |
+| `type`     | string | ✓        | `"pass"`                              |
+| `upstream` | string | ✓        | `"host:port"` — TCP dial address      |
+
+**Constraints:**
+
+- `pass` routes **must** have a `domain` pattern (SNI matching)
+- `pass` routes **cannot** use `path` or `methods` (these are HTTP-level concepts — not available before TLS termination)
+
+## L4 Dispatching (pass routes)
+
+When a service has any `pass` routes, prox automatically activates an L4 dispatcher. The dispatcher intercepts raw TCP connections **before** TLS termination:
+
+```
+Client → :443 TCP
+  → Peek SNI from TLS ClientHello (5s timeout)
+  → Walk routes in config order
+    → First match is "pass" → raw TCP relay to upstream
+    → First match is L7     → TLS termination → HTTP routing
+    → No match              → TLS termination → HTTP 404
+```
+
+**Route order matters.** The dispatcher walks all routes (not just `pass` routes) in config order. The first domain match wins:
+
+```json5
+{
+  services: {
+    gateway: {
+      listen: ":443",
+      tls: true,
+      tls_cert: "/etc/prox/certs/",
+      routes: [
+        // L4: *.cdn.example.com → raw TCP relay (no TLS termination)
+        {
+          match: { domain: "*.cdn.example.com" },
+          action: { type: "pass", upstream: "10.0.0.5:3504" },
+        },
+
+        // L7: everything else on *.example.com → TLS termination + HTTP
+        {
+          match: { domain: "*.example.com" },
+          action: "web_app",
+        },
+      ],
+    },
+  },
+}
+```
+
+Hot reload updates both L4 and L7 routes atomically.
 
 ## Resources
 
@@ -263,7 +386,11 @@ The validator checks:
 - Required fields are present
 - HTTP methods are valid
 - Path patterns are well-formed
+- Domain patterns are well-formed (no partial wildcards, at least 2 segments)
+- At least one of `path` or `domain` in each route
 - TLS cert/key are provided when TLS is enabled
+- `pass` routes require a `domain` (SNI matching) and cannot use `path` or `methods`
+- `pass` actions require an `upstream`
 - No duplicate action/resource names across files
 - No circular file references
 - Reports **all** issues at once

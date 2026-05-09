@@ -1,4 +1,4 @@
-// Package action implements request handlers (proxy, static, serve).
+// Package action implements request handlers (proxy, static, serve, pass).
 package action
 
 import (
@@ -52,6 +52,12 @@ func buildHandler(act *config.Action, resolver *resource.Resolver, routePath str
 		return NewStatic(act, resolver)
 	case config.ActionTypeServe:
 		return NewServe(act, routePath)
+	case config.ActionTypePass:
+		// Pass actions are handled at L4 by the dispatcher — they never reach HTTP.
+		// This is a safety net in case of misconfiguration.
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}), nil
 	default:
 		return nil, fmt.Errorf("unknown action type %q", act.Type)
 	}

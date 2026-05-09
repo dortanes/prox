@@ -1,0 +1,264 @@
+package dispatcher
+
+import (
+	"bytes"
+	"io"
+	"log/slog"
+	"net"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+const (
+	sniPeekTimeout      = 5 * time.Second
+	upstreamDialTimeout = 10 * time.Second
+)
+
+// Route is a pre-compiled L4 route for domain-based dispatching.
+type Route struct {
+	Domain         string   // original pattern (e.g. "*.cdn.example.com")
+	DomainSegments []string // split + lowered segments for glob matching
+	IsPass         bool     // true for action type "pass"
+	Upstream       string   // dial address for pass routes
+}
+
+// Dispatcher intercepts raw TCP connections on a listener, peeks the
+// TLS ClientHello for SNI, and dispatches: "pass" routes get a raw
+// TCP relay; everything else is fed to the HTTP server via a synthetic
+// net.Listener.
+type Dispatcher struct {
+	routes atomic.Pointer[[]*Route]
+	wg     sync.WaitGroup // tracks active pass relays
+}
+
+// New creates a Dispatcher with the given pre-compiled routes.
+// Routes are evaluated in order — first domain match wins.
+func New(routes []*Route) *Dispatcher {
+	d := &Dispatcher{}
+	d.routes.Store(&routes)
+	return d
+}
+
+// SwapRoutes atomically replaces the dispatcher's route table.
+// Active connections are not affected — new routes take effect
+// on the next incoming connection.
+func (d *Dispatcher) SwapRoutes(routes []*Route) {
+	d.routes.Store(&routes)
+}
+
+// Serve starts the dispatcher in the background. It accepts connections
+// from ln, peeks SNI, and dispatches. Connections that are not "pass"
+// are sent to the returned net.Listener for consumption by
+// http.Server.Serve / ServeTLS.
+func (d *Dispatcher) Serve(ln net.Listener) net.Listener {
+	httpLn := newChanListener(ln.Addr())
+
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.acceptLoop(ln, httpLn)
+	}()
+
+	return httpLn
+}
+
+// Wait blocks until all active pass relays have finished.
+func (d *Dispatcher) Wait() {
+	d.wg.Wait()
+}
+
+func (d *Dispatcher) acceptLoop(ln net.Listener, httpLn *chanListener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			// Listener closed — shut down.
+			httpLn.Close()
+			return
+		}
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			d.handleConn(conn, httpLn)
+		}()
+	}
+}
+
+func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
+	// Deadline for the SNI peek — don't hang forever on slow/malicious clients.
+	conn.SetReadDeadline(time.Now().Add(sniPeekTimeout))
+
+	sni, buf, err := PeekSNI(conn)
+
+	// Clear the deadline for subsequent I/O.
+	conn.SetReadDeadline(time.Time{})
+
+	if err != nil {
+		slog.Debug("sni peek failed, closing connection",
+			"error", err,
+			"remote", conn.RemoteAddr(),
+		)
+		conn.Close()
+		return
+	}
+
+	sniLower := strings.ToLower(sni)
+
+	// Walk routes in config order — first domain match wins.
+	routes := *d.routes.Load()
+	for _, route := range routes {
+		if !matchDomain(route.DomainSegments, sniLower) {
+			continue
+		}
+
+		if route.IsPass {
+			slog.Debug("l4 pass",
+				"sni", sni,
+				"pattern", route.Domain,
+				"upstream", route.Upstream,
+				"remote", conn.RemoteAddr(),
+			)
+			d.relayPass(conn, buf, route.Upstream)
+			return
+		}
+
+		// L7 route — feed to HTTP server with buffered bytes replayed.
+		slog.Debug("l4 → l7",
+			"sni", sni,
+			"pattern", route.Domain,
+			"remote", conn.RemoteAddr(),
+		)
+		httpLn.Deliver(newPrefixConn(conn, buf))
+		return
+	}
+
+	// No route matched — still feed to HTTP server (it will 404 / default-host).
+	if sni != "" {
+		slog.Debug("l4 no route match, forwarding to l7",
+			"sni", sni,
+			"remote", conn.RemoteAddr(),
+		)
+	}
+	httpLn.Deliver(newPrefixConn(conn, buf))
+}
+
+func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream string) {
+	defer client.Close()
+
+	up, err := net.DialTimeout("tcp", upstream, upstreamDialTimeout)
+	if err != nil {
+		slog.Error("l4 upstream dial failed",
+			"upstream", upstream,
+			"error", err,
+			"remote", client.RemoteAddr(),
+		)
+		return
+	}
+	defer up.Close()
+
+	// Replay the peeked ClientHello bytes to the upstream.
+	if _, err := up.Write(peekedBytes); err != nil {
+		slog.Error("l4 upstream write failed",
+			"upstream", upstream,
+			"error", err,
+		)
+		return
+	}
+
+	Relay(client, up)
+}
+
+// matchDomain checks if host matches the pattern segments.
+// Each "*" matches exactly one domain label.
+func matchDomain(patternSegments []string, host string) bool {
+	if len(patternSegments) == 0 {
+		return true // nil pattern matches everything
+	}
+
+	hostSegments := strings.Split(host, ".")
+	if len(hostSegments) != len(patternSegments) {
+		return false
+	}
+
+	for i, pat := range patternSegments {
+		if pat == "*" {
+			continue
+		}
+		if hostSegments[i] != pat {
+			return false
+		}
+	}
+	return true
+}
+
+// --- prefixConn: replays buffered bytes before reading from the real conn ---
+
+type prefixConn struct {
+	net.Conn
+	reader io.Reader
+}
+
+func newPrefixConn(conn net.Conn, prefix []byte) net.Conn {
+	if len(prefix) == 0 {
+		return conn
+	}
+	return &prefixConn{
+		Conn:   conn,
+		reader: io.MultiReader(bytes.NewReader(prefix), conn),
+	}
+}
+
+func (c *prefixConn) Read(b []byte) (int, error) {
+	return c.reader.Read(b)
+}
+
+// --- chanListener: synthetic net.Listener fed by the dispatcher ---
+
+type chanListener struct {
+	ch   chan net.Conn
+	addr net.Addr
+	once sync.Once
+	done chan struct{}
+}
+
+func newChanListener(addr net.Addr) *chanListener {
+	return &chanListener{
+		ch:   make(chan net.Conn, 64),
+		addr: addr,
+		done: make(chan struct{}),
+	}
+}
+
+func (cl *chanListener) Accept() (net.Conn, error) {
+	select {
+	case conn, ok := <-cl.ch:
+		if !ok {
+			return nil, net.ErrClosed
+		}
+		return conn, nil
+	case <-cl.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (cl *chanListener) Close() error {
+	cl.once.Do(func() { close(cl.done) })
+	return nil
+}
+
+func (cl *chanListener) Addr() net.Addr {
+	return cl.addr
+}
+
+// Deliver sends a connection to the HTTP server.
+// Returns false if the listener has been closed.
+func (cl *chanListener) Deliver(conn net.Conn) bool {
+	select {
+	case cl.ch <- conn:
+		return true
+	case <-cl.done:
+		conn.Close()
+		return false
+	}
+}
