@@ -30,6 +30,7 @@ type MatchResult struct {
 	Domain        string // actual request host (no port)
 	Path          string // actual request path
 	Target        string // selected target from balancer (empty if no balancer)
+	Vars          map[string]string // route-level variables from "set"
 	done          func() // release callback for connection-tracking balancers
 }
 
@@ -70,6 +71,9 @@ type compiledRoute struct {
 
 	// Load balancing.
 	bal balancer.Balancer // nil = no balancing
+
+	// Route-level variables from "set".
+	vars map[string]string
 }
 
 // New compiles a list of config routes into a Router.
@@ -112,6 +116,7 @@ func New(routes []*config.Route) *Router {
 		}
 
 		cr.bal = buildBalancer(r.Balancer)
+		cr.vars = r.Set
 
 		compiled = append(compiled, cr)
 	}
@@ -119,9 +124,28 @@ func New(routes []*config.Route) *Router {
 	return &Router{routes: compiled}
 }
 
+// RouteBalancer returns the balancer instance for the route at the given index.
+// Returns nil if the index is out of range or the route has no balancer.
+func (rt *Router) RouteBalancer(index int) balancer.Balancer {
+	if index >= 0 && index < len(rt.routes) {
+		return rt.routes[index].bal
+	}
+	return nil
+}
+
+// SetRouteBalancer replaces the balancer for the route at the given index.
+// Used to wrap a flat balancer in a Grouped balancer for plugin-managed routes.
+func (rt *Router) SetRouteBalancer(index int, bal balancer.Balancer) {
+	if index >= 0 && index < len(rt.routes) {
+		rt.routes[index].bal = bal
+	}
+}
+
 // buildBalancer creates a balancer from the route's config.
+// A balancer is always created when a config is present, even with an empty
+// target list — plugins may populate targets dynamically via SwapTargets().
 func buildBalancer(cfg *config.BalancerConfig) balancer.Balancer {
-	if cfg == nil || len(cfg.Targets) == 0 {
+	if cfg == nil {
 		return nil
 	}
 	switch cfg.Type {
@@ -159,11 +183,16 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 			MatchPath:     route.path,
 			Domain:        host,
 			Path:          r.URL.Path,
+			Vars:          route.vars,
 		}
 
 		// Select a target from the balancer if present.
 		if route.bal != nil {
-			result.Target = route.bal.Next()
+			if kb, ok := route.bal.(balancer.KeyedBalancer); ok && len(captures) > 0 {
+				result.Target = kb.NextKeyed(captures[0])
+			} else {
+				result.Target = route.bal.Next()
+			}
 			bal := route.bal
 			target := result.Target
 			result.done = func() { bal.Done(target) }

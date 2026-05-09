@@ -36,6 +36,20 @@ func Build(actions map[string]*config.Action, resolver *resource.Resolver, hints
 		handlers[name] = h
 	}
 
+	// Wire fallback handlers (second pass to allow forward references).
+	for name, act := range actions {
+		if act.Fallback == "" {
+			continue
+		}
+		fb, ok := handlers[act.Fallback]
+		if !ok {
+			return nil, fmt.Errorf("action %q: fallback %q not found", name, act.Fallback)
+		}
+		if p, ok := handlers[name].(*Proxy); ok {
+			p.SetFallback(fb)
+		}
+	}
+
 	return &Registry{handlers: handlers}, nil
 }
 

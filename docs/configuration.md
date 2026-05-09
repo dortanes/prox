@@ -127,9 +127,12 @@ Routes are evaluated in order — first match wins.
     path: "/api/*", // optional if domain set
     methods: ["GET", "POST"], // optional, empty = all
   },
+  set: { port: "8080" }, // optional, route-level variables for templates
   action: "proxy_to_backend", // string ref to actions map
 }
 ```
+
+Route-level variables defined in `set` are available as `{key}` placeholders in the action's upstream template. This allows multiple routes to share a single action with different parameters.
 
 At least one of `domain` or `path` must be specified. Omit `match` entirely for a **catch-all** route:
 
@@ -308,7 +311,7 @@ upstream: "http://{target}/api/v1"
 
 - Balancers are only supported with `proxy` and `pass` action types
 - The action's `upstream` **must** contain `{target}` when a balancer is used
-- Targets must be non-empty and unique within a balancer
+- Targets must be non-empty and unique within a balancer (unless [plugins](plugins.md) populate them)
 
 ### L4 pass-through with balancing
 
@@ -351,16 +354,66 @@ The `leastconn` strategy tracks active connections per target. A connection is c
 }
 ```
 
+### Dynamic targets with plugins
+
+Balancer targets can be populated dynamically by [plugins](plugins.md). Set `targets` to an empty array and attach a plugin that pushes targets at runtime:
+
+```json5
+{
+  match: { domain: "*.**", path: "/ws" },
+  plugins: ["./plugins/resolver"],
+  balancer: {
+    type: "leastconn",
+    targets: [],   // plugin will populate
+  },
+  action: {
+    type: "proxy",
+    upstream: "{target}",
+  },
+}
+```
+
+See [docs/plugins.md](plugins.md) for the full plugin protocol and authoring guide.
+
 ## Actions
 
 ### `proxy` — Reverse Proxy
 
-| Field      | Type   | Required | Description                                          |
-| ---------- | ------ | -------- | ---------------------------------------------------- |
-| `type`     | string | ✓        | `"proxy"`                                            |
-| `upstream` | string | ✓        | `"host:port"`, `"http://host:port"`, or `"{target}"` |
-| `timeout`  | string |          | `"5s"`, `"30s"`, `"1m"`                              |
-| `headers`  | object |          | Extra headers to send to upstream                    |
+| Field      | Type   | Required | Description                                              |
+| ---------- | ------ | -------- | -------------------------------------------------------- |
+| `type`     | string | ✓        | `"proxy"`                                                |
+| `upstream` | string | ✓        | `"host:port"`, `"http://host:port"`, or template         |
+| `timeout`  | string |          | `"5s"`, `"30s"`, `"1m"`                                  |
+| `headers`  | object |          | Extra headers to send to upstream                        |
+| `fallback` | string |          | Named action to invoke when the primary action fails     |
+
+The upstream field supports template placeholders: `{target}` (from the route's balancer) and any key from the route's `set` field. For example, `"{target}:{port}"` resolves both the balancer target and a route-level variable.
+
+The `fallback` action is invoked when no balancer target is available or the upstream is unreachable. This enables graceful degradation without returning 502.
+
+```json5
+// Route with variables and shared action.
+{
+  match: { domain: "*.**", path: "/ws" },
+  plugins: ["./plugins/resolver"],
+  balancer: { type: "leastconn" },
+  set: { port: "8080" },
+  action: "dynamic_proxy",
+},
+
+// Shared action definition.
+actions: {
+  dynamic_proxy: {
+    type: "proxy",
+    upstream: "{target}:{port}",
+    fallback: "default_backend",
+  },
+  default_backend: {
+    type: "proxy",
+    upstream: "https://fallback.internal",
+  },
+}
+```
 
 Headers are injected into every request forwarded to the upstream. This is useful for setting a custom `Host` header, authentication tokens, or any other headers the upstream requires.
 
@@ -623,9 +676,11 @@ The validator checks:
 - `pass` routes require a `domain` (SNI matching) and cannot use `path` or `methods`
 - `pass` actions require an `upstream`
 - Balancer type is valid (`roundrobin`, `random`, or `leastconn`)
-- Balancer targets are non-empty and unique
+- Balancer targets are non-empty and unique (empty allowed with plugins)
 - Balancer is only used with `proxy` or `pass` actions
 - Action upstream contains `{target}` when a balancer is used
+- Plugins require a balancer on the same route
+- Plugin paths are non-empty
 - No duplicate action/resource names across files
 - No circular file references
 - Reports **all** issues at once

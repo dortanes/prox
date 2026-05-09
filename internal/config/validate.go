@@ -116,6 +116,10 @@ func (v *validator) validateRoute(svcName string, idx int, route *Route) {
 		}
 	}
 
+	if len(route.Plugins) > 0 {
+		v.validatePlugins(prefix, route)
+	}
+
 	if route.Balancer != nil {
 		v.validateBalancer(prefix, route)
 	}
@@ -272,6 +276,18 @@ func (v *validator) validatePassAction(name string, action *Action) {
 	}
 }
 
+func (v *validator) validatePlugins(prefix string, route *Route) {
+	if route.Balancer == nil {
+		v.addIssue("%s: plugins require a balancer to populate targets", prefix)
+	}
+
+	for i, p := range route.Plugins {
+		if p == "" {
+			v.addIssue("%s: plugins[%d] is empty", prefix, i)
+		}
+	}
+}
+
 func (v *validator) validateBalancer(prefix string, route *Route) {
 	bal := route.Balancer
 
@@ -285,8 +301,9 @@ func (v *validator) validateBalancer(prefix string, route *Route) {
 			prefix, bal.Type, BalancerRoundRobin, BalancerRandom, BalancerLeastConn)
 	}
 
-	if len(bal.Targets) == 0 {
-		v.addIssue("%s: balancer.targets must have at least one entry", prefix)
+	// Empty targets are valid when plugins will populate them.
+	if len(bal.Targets) == 0 && len(route.Plugins) == 0 {
+		v.addIssue("%s: balancer.targets must have at least one entry (or use plugins)", prefix)
 	}
 
 	// Check for duplicates.

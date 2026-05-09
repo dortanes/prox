@@ -31,10 +31,14 @@ type Service struct {
 
 // Route binds a request matcher to an action — either by name or inline.
 // An optional Balancer distributes requests across multiple targets.
+// Plugins can dynamically manage balancer targets at runtime.
+// Set defines route-level variables available as {key} in upstream templates.
 type Route struct {
-	Match    *Match          `json:"match"`
-	Balancer *BalancerConfig `json:"balancer,omitempty"`
-	Action   ActionRef       `json:"action"`
+	Match    *Match            `json:"match"`
+	Plugins  []string          `json:"plugins,omitempty"`
+	Balancer *BalancerConfig   `json:"balancer,omitempty"`
+	Set      map[string]string `json:"set,omitempty"`
+	Action   ActionRef         `json:"action"`
 }
 
 // Match defines the criteria for a route to activate.
@@ -83,6 +87,10 @@ type Action struct {
 	// Proxy-specific fields.
 	Upstream string   `json:"upstream,omitempty"`
 	Timeout  Duration `json:"timeout,omitempty"`
+
+	// Fallback action name — invoked when the primary action fails
+	// (e.g. no target selected, upstream unreachable).
+	Fallback string `json:"fallback,omitempty"`
 
 	// Shared fields (proxy, static).
 	Headers map[string]string `json:"headers,omitempty"`

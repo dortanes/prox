@@ -19,6 +19,7 @@ import (
 	bal "github.com/dortanes/prox/internal/balancer"
 	"github.com/dortanes/prox/internal/config"
 	"github.com/dortanes/prox/internal/dispatcher"
+	"github.com/dortanes/prox/internal/plugin"
 	"github.com/dortanes/prox/internal/resource"
 	"github.com/dortanes/prox/internal/router"
 )
@@ -34,6 +35,7 @@ const (
 type Group struct {
 	servers  []*managedServer
 	handlers map[string]*swappableHandler // keyed by service name
+	plugins  *plugin.Manager              // nil when no plugins configured
 }
 
 type managedServer struct {
@@ -58,13 +60,46 @@ func Build(cfg *config.Config) (*Group, error) {
 		handlers: make(map[string]*swappableHandler),
 	}
 
+	// Collect route balancers for plugin binding.
+	routeBalancers := make(map[string]bal.Balancer)
+
 	for name, svc := range cfg.Services {
-		srv, handler, err := buildServer(name, svc, cfg, registry)
+		// Build router first — its balancer instances are shared with plugins.
+		rt := router.New(svc.Routes)
+
+		srv, handler, err := buildServer(name, svc, cfg, registry, rt)
 		if err != nil {
 			return nil, fmt.Errorf("building service %q: %w", name, err)
 		}
 		g.servers = append(g.servers, srv)
 		g.handlers[name] = handler
+
+		// For plugin-managed routes, wrap the balancer in a Grouped balancer
+		// so it can receive grouped targets and route by key.
+		for i, route := range svc.Routes {
+			if route.Balancer != nil && len(route.Plugins) > 0 {
+				inner := rt.RouteBalancer(i)
+				if inner != nil {
+					grouped := bal.NewGrouped(string(route.Balancer.Type), inner)
+					rt.SetRouteBalancer(i, grouped)
+					routeID := fmt.Sprintf("%s:%d", name, i)
+					routeBalancers[routeID] = grouped
+				}
+			} else if route.Balancer != nil {
+				routeID := fmt.Sprintf("%s:%d", name, i)
+				if b := rt.RouteBalancer(i); b != nil {
+					routeBalancers[routeID] = b
+				}
+			}
+		}
+	}
+
+	// Build plugin bindings.
+	bindings := buildPluginBindings(cfg, routeBalancers)
+	if len(bindings) > 0 {
+		g.plugins = plugin.NewManager()
+		g.plugins.Configure(bindings)
+		slog.Info("plugin bindings configured", "count", len(bindings))
 	}
 
 	return g, nil
@@ -82,6 +117,9 @@ func (g *Group) Reload(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("building actions: %w", err)
 	}
+
+	// Rebuild balancers for plugin binding.
+	routeBalancers := make(map[string]bal.Balancer)
 
 	swapped := 0
 
@@ -106,9 +144,42 @@ func (g *Group) Reload(cfg *config.Config) error {
 			}
 		}
 
+		// For plugin-managed routes, wrap the balancer in a Grouped balancer.
+		for i, route := range svc.Routes {
+			if route.Balancer != nil && len(route.Plugins) > 0 {
+				inner := rt.RouteBalancer(i)
+				if inner != nil {
+					grouped := bal.NewGrouped(string(route.Balancer.Type), inner)
+					rt.SetRouteBalancer(i, grouped)
+					routeID := fmt.Sprintf("%s:%d", name, i)
+					routeBalancers[routeID] = grouped
+				}
+			} else if route.Balancer != nil {
+				routeID := fmt.Sprintf("%s:%d", name, i)
+				if b := rt.RouteBalancer(i); b != nil {
+					routeBalancers[routeID] = b
+				}
+			}
+		}
+
 		swapped++
 
 		slog.Info("service reloaded", "service", name)
+	}
+
+	// Reconfigure plugins.
+	bindings := buildPluginBindings(cfg, routeBalancers)
+	if g.plugins != nil {
+		if len(bindings) > 0 {
+			g.plugins.Reconfigure(bindings)
+		} else {
+			g.plugins.Stop()
+			g.plugins = nil
+		}
+	} else if len(bindings) > 0 {
+		g.plugins = plugin.NewManager()
+		g.plugins.Configure(bindings)
+		_ = g.plugins.Start(context.Background())
 	}
 
 	// Warn about removed services.
@@ -124,8 +195,7 @@ func (g *Group) Reload(cfg *config.Config) error {
 	return nil
 }
 
-func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry) (*managedServer, *swappableHandler, error) {
-	rt := router.New(svc.Routes)
+func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry, rt *router.Router) (*managedServer, *swappableHandler, error) {
 	handler := newSwappableHandler(name, rt, registry)
 
 	srv := &http.Server{
@@ -348,6 +418,13 @@ func loadCertificatesFromDir(dir string) ([]tls.Certificate, error) {
 
 // ListenAndServe starts all servers and blocks until ctx is cancelled.
 func (g *Group) ListenAndServe(ctx context.Context) error {
+	// Start plugin processes.
+	if g.plugins != nil {
+		if err := g.plugins.Start(ctx); err != nil {
+			slog.Error("plugin start error", "error", err)
+		}
+	}
+
 	errCh := make(chan error, len(g.servers))
 
 	for _, ms := range g.servers {
@@ -420,6 +497,11 @@ func (ms *managedServer) serveWithDispatcher() error {
 
 // shutdown gracefully stops all servers with a timeout.
 func (g *Group) shutdown() {
+	// Stop plugin processes first.
+	if g.plugins != nil {
+		g.plugins.Stop()
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
@@ -538,4 +620,48 @@ func buildRouteHints(cfg *config.Config) *action.RouteHints {
 	}
 
 	return hints
+}
+
+// buildPluginBindings creates plugin-to-route bindings from the config.
+func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) []*plugin.Binding {
+	var bindings []*plugin.Binding
+
+	for name, svc := range cfg.Services {
+		for i, route := range svc.Routes {
+			if len(route.Plugins) == 0 {
+				continue
+			}
+
+			routeID := fmt.Sprintf("%s:%d", name, i)
+			b := balancers[routeID]
+
+			var match *plugin.MatchInfo
+			if route.Match != nil {
+				match = &plugin.MatchInfo{
+					Domain: route.Match.Domain,
+					Path:   route.Match.Path,
+				}
+			}
+
+			for _, pluginPath := range route.Plugins {
+				absPath, err := filepath.Abs(pluginPath)
+				if err != nil {
+					slog.Warn("invalid plugin path",
+						"plugin", pluginPath,
+						"error", err,
+					)
+					continue
+				}
+
+				bindings = append(bindings, &plugin.Binding{
+					RouteID:  routeID,
+					Plugin:   absPath,
+					Match:    match,
+					Balancer: b,
+				})
+			}
+		}
+	}
+
+	return bindings
 }

@@ -14,22 +14,20 @@ import (
 )
 
 // Proxy forwards requests to an upstream server.
-// WebSocket upgrade requests are detected automatically and handled
-// via connection hijacking with bidirectional TCP relay.
+// WebSocket upgrades are detected and handled via bidirectional TCP relay.
 //
-// When the upstream contains {target}, it is resolved per-request
-// using the target selected by the route's load balancer.
+// When the upstream contains template placeholders (e.g. {target}),
+// they are resolved per-request from the route's balancer and set variables.
 type Proxy struct {
-	// Static mode (no {target} template).
-	proxy  *httputil.ReverseProxy
+	proxy  *httputil.ReverseProxy // static mode
 	target *url.URL
 
-	// Dynamic mode ({target} in upstream template).
-	upstreamTpl string // raw template, e.g. "{target}" or "http://{target}/prefix"
+	upstreamTpl string         // dynamic mode template
 	transport   *http.Transport
 
-	headers map[string]string
-	timeout time.Duration
+	headers  map[string]string
+	timeout  time.Duration
+	fallback http.Handler // invoked when the primary action fails
 }
 
 // NewProxy creates a reverse proxy handler for the given action config.
@@ -58,8 +56,8 @@ func NewProxy(act *config.Action) (*Proxy, error) {
 		timeout: timeout,
 	}
 
-	// Dynamic mode: upstream contains {target} placeholder.
-	if strings.Contains(act.Upstream, "{target}") {
+	// Dynamic mode: upstream contains template placeholders.
+	if strings.Contains(act.Upstream, "{") {
 		p.upstreamTpl = act.Upstream
 		p.transport = transport
 		return p, nil
@@ -91,6 +89,10 @@ func NewProxy(act *config.Action) (*Proxy, error) {
 			"path", r.URL.Path,
 			"error", err,
 		)
+		if p.fallback != nil {
+			p.fallback.ServeHTTP(w, r)
+			return
+		}
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 	}
 
@@ -111,12 +113,27 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.proxy.ServeHTTP(w, r)
 }
 
-// serveDynamic resolves the {target} template and proxies the request.
+// SetFallback sets the handler invoked when the primary action fails.
+func (p *Proxy) SetFallback(h http.Handler) {
+	p.fallback = h
+}
+
+// serveDynamic resolves template placeholders and proxies the request.
 func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 	match := router.GetMatchResult(r)
-	if match == nil || match.Target == "" {
-		slog.Error("no target selected for balanced route",
+	needsTarget := strings.Contains(p.upstreamTpl, "{target}")
+	if needsTarget && (match == nil || match.Target == "") {
+		if p.fallback != nil {
+			slog.Debug("no target, using fallback",
+				"host", r.Host,
+				"path", r.URL.Path,
+			)
+			p.fallback.ServeHTTP(w, r)
+			return
+		}
+		slog.Error("no target selected",
 			"upstream_tpl", p.upstreamTpl,
+			"host", r.Host,
 			"path", r.URL.Path,
 		)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
@@ -126,7 +143,7 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 	// Signal the balancer when this request completes.
 	defer match.Done()
 
-	resolved := strings.ReplaceAll(p.upstreamTpl, "{target}", match.Target)
+	resolved := resolveTemplate(p.upstreamTpl, match)
 	target, err := parseUpstream(resolved)
 	if err != nil {
 		slog.Error("failed to parse resolved upstream",
@@ -136,6 +153,12 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
+
+	slog.Debug("proxying dynamic request",
+		"host", r.Host,
+		"path", r.URL.Path,
+		"upstream", resolved,
+	)
 
 	if isWebSocketUpgrade(r) {
 		serveWebSocket(w, r, target, p.headers, p.timeout)
@@ -163,6 +186,10 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 			"path", r.URL.Path,
 			"error", err,
 		)
+		if p.fallback != nil {
+			p.fallback.ServeHTTP(w, r)
+			return
+		}
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 	}
 
@@ -170,13 +197,18 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseUpstream normalizes the upstream address into a URL.
-// Accepts "host:port" or "http://host:port" formats.
 func parseUpstream(raw string) (*url.URL, error) {
-	// If a scheme is already present, parse as-is.
 	if strings.Contains(raw, "://") {
 		return url.Parse(raw)
 	}
-
-	// Otherwise, default to http.
 	return url.Parse("http://" + raw)
+}
+
+// resolveTemplate replaces {target} and route-level {key} vars in the template.
+func resolveTemplate(tpl string, match *router.MatchResult) string {
+	s := strings.ReplaceAll(tpl, "{target}", match.Target)
+	for k, v := range match.Vars {
+		s = strings.ReplaceAll(s, "{"+k+"}", v)
+	}
+	return s
 }

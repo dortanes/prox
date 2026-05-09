@@ -74,7 +74,24 @@
           },
         },
 
-        // Proxy with custom Host header to upstream.
+        // Plugin-managed targets with route-level variables.
+        // The plugin discovers upstreams; each route sets its own port.
+        {
+          match: { domain: "*.**", path: "/ws" },
+          plugins: ["./plugins/resolver"],
+          balancer: { type: "leastconn" },
+          set: { port: "8080" },
+          action: "dynamic_proxy",
+        },
+        {
+          match: { domain: "*.**", path: "/grpc" },
+          plugins: ["./plugins/resolver"],
+          balancer: { type: "leastconn" },
+          set: { port: "8081" },
+          action: "dynamic_proxy",
+        },
+
+        // Catch-all with custom Host header.
         {
           match: { domain: "*.**" },
           action: {
@@ -99,6 +116,16 @@
     frontend: {
       type: "serve",
       root: "./public",
+    },
+    // Shared dynamic proxy with fallback.
+    dynamic_proxy: {
+      type: "proxy",
+      upstream: "{target}:{port}",
+      fallback: "default_backend",
+    },
+    default_backend: {
+      type: "proxy",
+      upstream: "https://fallback.internal",
     },
   },
 }

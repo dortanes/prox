@@ -82,6 +82,28 @@ Routes can distribute traffic across multiple upstreams. The balancer selects a 
 
 WebSocket connections through balanced routes are pinned to the selected target for the entire session. See [docs/configuration.md#load-balancing](docs/configuration.md#load-balancing) for details.
 
+## Plugins
+
+Plugins are external executables that dynamically manage balancer targets at runtime. They communicate with prox over stdin/stdout using line-delimited JSON. Plugins run as sidecar processes — they never touch the request hot path.
+
+```json5
+{
+  match: { domain: "*.**", path: "/ws" },
+  plugins: ["./plugins/resolver"],
+  balancer: { type: "leastconn" },
+  set: { port: "8080" },
+  action: "dynamic_proxy",
+}
+```
+
+On startup, prox sends a `configure` message with the route's match criteria. The plugin responds with `set_targets` pushes — either a flat list or grouped by key (e.g., location prefix). Grouped targets enable per-request routing based on domain wildcard captures.
+
+Route-level variables (`set`) and action `fallback` allow sharing a single action across multiple routes with different parameters and graceful degradation.
+
+**Lifecycle**: auto-restart on crash with exponential backoff, graceful shutdown on SIGTERM, reconfigure on hot reload.
+
+See [docs/plugins.md](docs/plugins.md) for the protocol specification and authoring guide.
+
 ## L4 Dispatching
 
 A single listener can mix L4 (TCP pass-through) and L7 (HTTP) routes. The dispatcher peeks the TLS ClientHello for the SNI hostname, walks routes in config order, and dispatches:
