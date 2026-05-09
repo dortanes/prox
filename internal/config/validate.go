@@ -1,0 +1,211 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+)
+
+// ValidationError collects all validation issues into a single error.
+type ValidationError struct {
+	Issues []string
+}
+
+func (e *ValidationError) Error() string {
+	return fmt.Sprintf("config validation failed with %d issue(s):\n  - %s",
+		len(e.Issues), strings.Join(e.Issues, "\n  - "))
+}
+
+// Validate checks the configuration for correctness.
+// Expects a normalized config (see loader.go).
+func Validate(cfg *Config) error {
+	v := &validator{cfg: cfg}
+
+	v.validateServices()
+	v.validateActions()
+
+	if len(v.issues) > 0 {
+		return &ValidationError{Issues: v.issues}
+	}
+
+	return nil
+}
+
+type validator struct {
+	cfg    *Config
+	issues []string
+}
+
+func (v *validator) addIssue(format string, args ...any) {
+	v.issues = append(v.issues, fmt.Sprintf(format, args...))
+}
+
+// validateServices checks all service definitions and their routes.
+func (v *validator) validateServices() {
+	if len(v.cfg.Services) == 0 {
+		v.addIssue("no services defined")
+		return
+	}
+
+	for name, svc := range v.cfg.Services {
+		v.validateService(name, svc)
+	}
+}
+
+func (v *validator) validateService(name string, svc *Service) {
+	if svc.Listen == "" {
+		v.addIssue("service %q: listen address is required", name)
+	}
+
+	if svc.TLS {
+		if svc.TLSCert == "" {
+			v.addIssue("service %q: tls_cert is required when tls is enabled", name)
+		}
+		if svc.TLSKey == "" {
+			v.addIssue("service %q: tls_key is required when tls is enabled", name)
+		}
+	}
+
+	if len(svc.Routes) == 0 {
+		v.addIssue("service %q: at least one route is required", name)
+		return
+	}
+
+	for i, route := range svc.Routes {
+		v.validateRoute(name, i, route)
+	}
+}
+
+func (v *validator) validateRoute(svcName string, idx int, route *Route) {
+	prefix := fmt.Sprintf("service %q route #%d", svcName, idx)
+
+	if route.Match == nil {
+		v.addIssue("%s: match is required", prefix)
+		return
+	}
+
+	if route.Match.Path == "" {
+		v.addIssue("%s: match.path is required", prefix)
+	}
+
+	v.validatePath(prefix, route.Match.Path)
+	v.validateMethods(prefix, route.Match.Methods)
+
+	if route.Action.IsEmpty() {
+		v.addIssue("%s: action is required", prefix)
+	} else if route.Action.Name != "" {
+		// After normalization, all refs should be Name-based.
+		if _, ok := v.cfg.Actions[route.Action.Name]; !ok {
+			v.addIssue("%s: action %q not found in actions", prefix, route.Action.Name)
+		}
+	}
+}
+
+// validatePath ensures the path pattern is well-formed.
+func (v *validator) validatePath(prefix, path string) {
+	if path == "" {
+		return // already reported above
+	}
+
+	if !strings.HasPrefix(path, "/") {
+		v.addIssue("%s: path must start with /", prefix)
+		return
+	}
+
+	// Wildcard is only valid at the end: "/api/*"
+	starIdx := strings.Index(path, "*")
+	if starIdx != -1 && starIdx != len(path)-1 {
+		v.addIssue("%s: wildcard * is only allowed at the end of a path", prefix)
+	}
+}
+
+
+func (v *validator) validateMethods(prefix string, methods []string) {
+	validMethods := map[string]bool{
+		http.MethodGet:     true,
+		http.MethodHead:    true,
+		http.MethodPost:    true,
+		http.MethodPut:     true,
+		http.MethodPatch:   true,
+		http.MethodDelete:  true,
+		http.MethodConnect: true,
+		http.MethodOptions: true,
+		http.MethodTrace:   true,
+	}
+
+	for _, m := range methods {
+		if !validMethods[strings.ToUpper(m)] {
+			v.addIssue("%s: unknown HTTP method %q", prefix, m)
+		}
+	}
+}
+
+
+func (v *validator) validateActions() {
+	if len(v.cfg.Actions) == 0 {
+		v.addIssue("no actions defined")
+		return
+	}
+
+	for name, action := range v.cfg.Actions {
+		v.validateAction(name, action)
+	}
+}
+
+func (v *validator) validateAction(name string, action *Action) {
+	switch action.Type {
+	case ActionTypeProxy:
+		v.validateProxyAction(name, action)
+	case ActionTypeStatic:
+		v.validateStaticAction(name, action)
+	case ActionTypeServe:
+		v.validateServeAction(name, action)
+	case "":
+		v.addIssue("action %q: type is required", name)
+	default:
+		v.addIssue("action %q: unknown type %q (expected %q, %q, or %q)",
+			name, action.Type, ActionTypeProxy, ActionTypeStatic, ActionTypeServe)
+	}
+}
+
+func (v *validator) validateProxyAction(name string, action *Action) {
+	if action.Upstream == "" {
+		v.addIssue("action %q (proxy): upstream is required", name)
+	}
+}
+
+func (v *validator) validateStaticAction(name string, action *Action) {
+	if action.Status == 0 {
+		v.addIssue("action %q (static): status is required", name)
+	} else if action.Status < 100 || action.Status > 599 {
+		v.addIssue("action %q (static): status %d is not a valid HTTP status code", name, action.Status)
+	}
+
+	if action.BodyRef.Name != "" {
+		if v.cfg.Resources == nil {
+			v.addIssue("action %q (static): body_ref %q referenced but no resources defined",
+				name, action.BodyRef.Name)
+		} else if _, ok := v.cfg.Resources[action.BodyRef.Name]; !ok {
+			v.addIssue("action %q (static): body_ref %q not found in resources",
+				name, action.BodyRef.Name)
+		}
+	}
+}
+
+// IsValidationError checks if an error is a ValidationError.
+func IsValidationError(err error) bool {
+	var ve *ValidationError
+	return errors.As(err, &ve)
+}
+
+func (v *validator) validateServeAction(name string, action *Action) {
+	hasRoot := action.Root != ""
+	hasFile := action.File != ""
+
+	if !hasRoot && !hasFile {
+		v.addIssue("action %q (serve): root or file is required", name)
+	} else if hasRoot && hasFile {
+		v.addIssue("action %q (serve): root and file are mutually exclusive", name)
+	}
+}

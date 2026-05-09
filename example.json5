@@ -1,0 +1,44 @@
+{
+  // A web app with API backend and static frontend.
+  services: {
+    web: {
+      listen: ":8080",
+      routes: [
+        // Health check — inline action, no need for a separate entry.
+        {
+          match: { path: "/health", methods: ["GET"] },
+          action: {
+            type: "static",
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+            body_ref: { json: { status: "ok" } },
+          },
+        },
+
+        // API — proxy to backend with timeout.
+        {
+          match: { path: "/api/*" },
+          action: "api",
+        },
+
+        // Everything else — serve static files.
+        {
+          match: { path: "/*" },
+          action: "frontend",
+        },
+      ],
+    },
+  },
+
+  actions: {
+    api: {
+      type: "proxy",
+      upstream: "localhost:3000",
+      timeout: "10s",
+    },
+    frontend: {
+      type: "serve",
+      root: "./public",
+    },
+  },
+}
