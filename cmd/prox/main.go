@@ -108,6 +108,16 @@ func runServe(args []string) int {
 	)
 	defer stop()
 
+	// Second interrupt forces immediate exit.
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh // first one is already handled above
+		<-sigCh // second one = force exit
+		slog.Warn("forced shutdown")
+		os.Exit(1)
+	}()
+
 	reloadCh := make(chan struct{}, 1)
 
 	sighupCh := make(chan os.Signal, 1)

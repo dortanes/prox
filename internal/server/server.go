@@ -537,10 +537,13 @@ func (g *Group) shutdown() {
 			}
 
 			if err := ms.server.Shutdown(ctx); err != nil {
-				slog.Error("shutdown error",
+				slog.Warn("graceful shutdown timed out, forcing close",
 					"service", ms.name,
 					"error", err,
 				)
+				// Force-close all active HTTP connections to unblock
+				// handlers stuck in upstream RoundTrip calls.
+				ms.server.Close()
 			} else {
 				slog.Info("server stopped", "service", ms.name)
 			}
