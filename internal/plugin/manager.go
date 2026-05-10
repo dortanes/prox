@@ -21,9 +21,12 @@ type Binding struct {
 	Plugin   string // absolute path to plugin binary
 	Match    *MatchInfo
 	Balancer balancer.Balancer
+	Timeout  time.Duration // per-request plugin call timeout
 }
 
 // Manager supervises plugin processes and routes push messages to balancers.
+// It also provides the hook call API (OnRequest, OnResponse, OnConnect)
+// for the HTTP handler and L4 dispatcher.
 type Manager struct {
 	mu        sync.Mutex
 	processes map[string]*managed // keyed by absolute plugin path
@@ -32,11 +35,23 @@ type Manager struct {
 	wg        sync.WaitGroup
 }
 
-// managed wraps a plugin process with restart state.
+// managed wraps a plugin process with restart state and hook caller.
 type managed struct {
 	path    string
 	proc    *Process
-	restart int // consecutive restart count for backoff
+	restart int       // consecutive restart count for backoff
+	caller  *Caller   // non-nil when plugin declared socket hooks
+	hooks   []string  // declared hook capabilities
+}
+
+// hasHook returns true if this plugin declared the given hook.
+func (mg *managed) hasHook(hook string) bool {
+	for _, h := range mg.hooks {
+		if h == hook {
+			return true
+		}
+	}
+	return false
 }
 
 // NewManager creates a plugin manager. Call Start() to spawn processes.
@@ -140,6 +155,9 @@ func (m *Manager) Reconfigure(bindings []*Binding) {
 			slog.Info("stopping unreferenced plugin",
 				"plugin", filepath.Base(path),
 			)
+			if mg.caller != nil {
+				mg.caller.Close()
+			}
 			mg.proc.Stop()
 			delete(m.processes, path)
 		}
@@ -205,11 +223,156 @@ func (m *Manager) Stop() {
 
 	m.mu.Lock()
 	for _, mg := range m.processes {
+		if mg.caller != nil {
+			mg.caller.Close()
+		}
 		mg.proc.Stop()
 	}
 	m.mu.Unlock()
 
 	m.wg.Wait()
+}
+
+// HasHook returns true if any plugin bound to the route supports the given hook.
+func (m *Manager) HasHook(routeID string, hook string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, b := range m.bindings {
+		if b.RouteID != routeID {
+			continue
+		}
+		mg, ok := m.processes[b.Plugin]
+		if ok && mg.hasHook(hook) {
+			return true
+		}
+	}
+	return false
+}
+
+// OnRequest calls the on_request hook for all plugins bound to the route.
+// Sequential execution, short-circuit on first deny.
+func (m *Manager) OnRequest(ctx context.Context, routeID string, req *RequestInfo) (*AuthorizeResult, error) {
+	callers := m.callersForHook(routeID, HookOnRequest)
+	if len(callers) == 0 {
+		return &AuthorizeResult{Allow: true}, nil
+	}
+
+	timeout := m.timeoutForRoute(routeID)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	merged := &AuthorizeResult{Allow: true}
+
+	for _, c := range callers {
+		result, err := c.CallRequest(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if !result.Allow {
+			return result, nil
+		}
+		// Merge injected headers from all plugins.
+		for k, v := range result.Headers {
+			if merged.Headers == nil {
+				merged.Headers = make(map[string]string)
+			}
+			merged.Headers[k] = v
+		}
+	}
+
+	return merged, nil
+}
+
+// OnResponse calls the on_response hook for all plugins bound to the route.
+func (m *Manager) OnResponse(ctx context.Context, routeID string, req *RequestInfo, resp *UpstreamResponseInfo) (*ResponseModResult, error) {
+	callers := m.callersForHook(routeID, HookOnResponse)
+	if len(callers) == 0 {
+		return &ResponseModResult{}, nil
+	}
+
+	timeout := m.timeoutForRoute(routeID)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	merged := &ResponseModResult{}
+
+	for _, c := range callers {
+		result, err := c.CallResponse(ctx, req, resp)
+		if err != nil {
+			return nil, err
+		}
+		// Merge modifications.
+		if result.Status != 0 {
+			merged.Status = result.Status
+		}
+		for k, v := range result.Headers {
+			if merged.Headers == nil {
+				merged.Headers = make(map[string]string)
+			}
+			merged.Headers[k] = v
+		}
+		merged.Remove = append(merged.Remove, result.Remove...)
+	}
+
+	return merged, nil
+}
+
+// OnConnect calls the on_connect hook for all plugins bound to the route.
+// Sequential execution, short-circuit on first deny.
+func (m *Manager) OnConnect(ctx context.Context, routeID string, conn *ConnInfo) (*ConnResult, error) {
+	callers := m.callersForHook(routeID, HookOnConnect)
+	if len(callers) == 0 {
+		return &ConnResult{Allow: true}, nil
+	}
+
+	timeout := m.timeoutForRoute(routeID)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	for _, c := range callers {
+		result, err := c.CallConnect(ctx, conn)
+		if err != nil {
+			return nil, err
+		}
+		if !result.Allow {
+			return result, nil
+		}
+	}
+
+	return &ConnResult{Allow: true}, nil
+}
+
+// callersForHook returns callers for all plugins bound to the route that support the hook.
+func (m *Manager) callersForHook(routeID, hook string) []*Caller {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var callers []*Caller
+	for _, b := range m.bindings {
+		if b.RouteID != routeID {
+			continue
+		}
+		mg, ok := m.processes[b.Plugin]
+		if !ok || mg.caller == nil || !mg.hasHook(hook) {
+			continue
+		}
+		callers = append(callers, mg.caller)
+	}
+	return callers
+}
+
+// timeoutForRoute returns the plugin timeout for the given route.
+func (m *Manager) timeoutForRoute(routeID string) time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, b := range m.bindings {
+		if b.RouteID == routeID && b.Timeout > 0 {
+			return b.Timeout
+		}
+	}
+	return defaultCallTimeout
 }
 
 // processPushes reads from the plugin's push channel and dispatches
@@ -239,48 +402,14 @@ func (m *Manager) processPushes(ctx context.Context, mg *managed) {
 	}
 }
 
-// handlePush dispatches a single push message to the right balancer.
+// handlePush dispatches a single push message to the right handler.
 func (m *Manager) handlePush(mg *managed, push Push) {
 	switch push.Method {
 	case MethodSetTargets:
-		m.mu.Lock()
-		for _, b := range m.bindings {
-			if b.Plugin == mg.path && b.RouteID == push.Params.RouteID {
-				if b.Balancer != nil {
-					if push.Params.Groups != nil {
-						// Grouped targets — route to KeyedBalancer.
-						if kb, ok := b.Balancer.(balancer.KeyedBalancer); ok {
-							kb.SwapGroupedTargets(push.Params.Groups)
-							total := 0
-							for _, t := range push.Params.Groups {
-								total += len(t)
-							}
-							slog.Info("plugin updated grouped targets",
-								"plugin", filepath.Base(mg.path),
-								"route", push.Params.RouteID,
-								"groups", len(push.Params.Groups),
-								"targets", total,
-							)
-						} else {
-							slog.Warn("plugin sent grouped targets but balancer is not keyed",
-								"plugin", filepath.Base(mg.path),
-								"route", push.Params.RouteID,
-							)
-						}
-					} else {
-						// Flat targets.
-						b.Balancer.SwapTargets(push.Params.Targets)
-						slog.Info("plugin updated targets",
-							"plugin", filepath.Base(mg.path),
-							"route", push.Params.RouteID,
-							"targets", len(push.Params.Targets),
-						)
-					}
-				}
-				break
-			}
-		}
-		m.mu.Unlock()
+		m.handleSetTargets(mg, push)
+
+	case MethodReady:
+		m.handleReady(mg, push)
 
 	default:
 		slog.Debug("unknown plugin push method",
@@ -288,6 +417,84 @@ func (m *Manager) handlePush(mg *managed, push Push) {
 			"method", push.Method,
 		)
 	}
+}
+
+// handleReady processes a plugin's capability declaration.
+func (m *Manager) handleReady(mg *managed, push Push) {
+	if push.Params.Socket == "" {
+		slog.Warn("plugin sent ready without socket path",
+			"plugin", filepath.Base(mg.path),
+		)
+		return
+	}
+
+	mg.hooks = push.Params.Hooks
+
+	timeout := defaultCallTimeout
+	// Use the first matching binding's timeout if set.
+	m.mu.Lock()
+	for _, b := range m.bindings {
+		if b.Plugin == mg.path && b.Timeout > 0 {
+			timeout = b.Timeout
+			break
+		}
+	}
+	m.mu.Unlock()
+
+	// Close old caller if re-readying after restart.
+	if mg.caller != nil {
+		mg.caller.Close()
+	}
+
+	mg.caller = NewCaller(push.Params.Socket, defaultPoolSize, timeout)
+
+	slog.Info("plugin ready with hooks",
+		"plugin", filepath.Base(mg.path),
+		"socket", push.Params.Socket,
+		"hooks", push.Params.Hooks,
+	)
+}
+
+// handleSetTargets routes target updates to the appropriate balancer.
+func (m *Manager) handleSetTargets(mg *managed, push Push) {
+	m.mu.Lock()
+	for _, b := range m.bindings {
+		if b.Plugin == mg.path && b.RouteID == push.Params.RouteID {
+			if b.Balancer != nil {
+				if push.Params.Groups != nil {
+					// Grouped targets — route to KeyedBalancer.
+					if kb, ok := b.Balancer.(balancer.KeyedBalancer); ok {
+						kb.SwapGroupedTargets(push.Params.Groups)
+						total := 0
+						for _, t := range push.Params.Groups {
+							total += len(t)
+						}
+						slog.Info("plugin updated grouped targets",
+							"plugin", filepath.Base(mg.path),
+							"route", push.Params.RouteID,
+							"groups", len(push.Params.Groups),
+							"targets", total,
+						)
+					} else {
+						slog.Warn("plugin sent grouped targets but balancer is not keyed",
+							"plugin", filepath.Base(mg.path),
+							"route", push.Params.RouteID,
+						)
+					}
+				} else {
+					// Flat targets.
+					b.Balancer.SwapTargets(push.Params.Targets)
+					slog.Info("plugin updated targets",
+						"plugin", filepath.Base(mg.path),
+						"route", push.Params.RouteID,
+						"targets", len(push.Params.Targets),
+					)
+				}
+			}
+			break
+		}
+	}
+	m.mu.Unlock()
 }
 
 // restartPlugin attempts to restart a crashed plugin with exponential backoff.
