@@ -45,6 +45,7 @@
         idle_timeout: "2m",        // keep-alive idle timeout (default: 120s)
         response_header_timeout: "5m",  // wait for upstream response headers (default: 30s)
         flush_interval: -1,        // flush immediately — required for streaming (SSE, long-lived HTTP)
+        max_connections: 10000,    // limit concurrent connections (default: unlimited)
       },
 
       routes: [

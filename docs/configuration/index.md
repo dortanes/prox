@@ -64,6 +64,7 @@ Durations accept strings (`"5s"`, `"1m30s"`, `"5m"`) or numbers (interpreted as 
 | `tls_handshake_timeout`    | `10s`   | TLS handshake deadline for HTTPS upstreams                                  |
 | `h2_read_idle_timeout`     | `30s`   | HTTP/2: send ping after this idle period                                    |
 | `h2_ping_timeout`          | `15s`   | HTTP/2: deadline for ping response                                          |
+| `max_connections`          | `0`     | Maximum concurrent connections. `0` = unlimited                             |
 
 !!! tip
     For streaming protocols (SSE, long-lived HTTP, long-polling), set `flush_interval` to `-1` and increase `read_timeout`, `write_timeout`, and `response_header_timeout` to accommodate long-lived connections.
