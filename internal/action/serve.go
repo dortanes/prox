@@ -31,7 +31,20 @@ func newServeFile(path string) (*Serve, error) {
 
 	return &Serve{
 		handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, absPath)
+			f, err := os.Open(absPath)
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			defer f.Close()
+
+			info, err := f.Stat()
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+
+			http.ServeContent(w, r, filepath.Base(absPath), info.ModTime(), f)
 		}),
 	}, nil
 }
