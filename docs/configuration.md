@@ -57,6 +57,13 @@ Durations accept strings (`"5s"`, `"1m30s"`, `"5m"`) or numbers (interpreted as 
 | `idle_timeout`             | `120s`  | Keep-alive idle timeout before closing the connection                       |
 | `response_header_timeout`  | `30s`   | Maximum time to wait for upstream response headers                          |
 | `flush_interval`           | `0`     | How often to flush buffered proxy response data. `-1` = flush immediately   |
+| `dial_timeout`             | action  | TCP dial timeout (defaults to the action's `timeout`)                       |
+| `keep_alive`               | `30s`   | TCP keep-alive interval                                                     |
+| `max_idle_conns`           | `100`   | Maximum idle connections in the connection pool                              |
+| `max_idle_conns_per_host`  | `10`    | Maximum idle connections per upstream host                                   |
+| `tls_handshake_timeout`    | `10s`   | TLS handshake deadline for HTTPS upstreams                                  |
+| `h2_read_idle_timeout`     | `30s`   | HTTP/2: send ping after this idle period                                    |
+| `h2_ping_timeout`          | `15s`   | HTTP/2: deadline for ping response                                          |
 
 > [!TIP]
 > For streaming protocols (SSE, long-lived HTTP, long-polling), set `flush_interval` to `-1` and increase `read_timeout`, `write_timeout`, and `response_header_timeout` to accommodate long-lived connections.
@@ -424,36 +431,45 @@ See [docs/plugins.md](plugins.md) for the full plugin protocol and authoring gui
 | `timeout`  | string |          | `"5s"`, `"30s"`, `"1m"`                                  |
 | `headers`  | object |          | Extra headers to send to upstream                        |
 | `fallback` | string |          | Named action to invoke when the primary action fails     |
-| `stream`   | bool   |          | Use raw HTTP tunnel for bidirectional streaming           |
+| `proto`    | string |          | Upstream protocol: `"h2"` for HTTP/2 cleartext (h2c)     |
+| `stream`   | bool   |          | Use raw HTTP/1.1 tunnel for bidirectional streaming       |
 
 The upstream field supports template placeholders: `{target}` (from the route's balancer) and any key from the route's `set` field. For example, `"{target}:{port}"` resolves both the balancer target and a route-level variable.
 
 The `fallback` action is invoked when no balancer target is available or the upstream is unreachable. This enables graceful degradation without returning 502.
 
-#### Streaming mode
+#### Upstream protocol (`proto`)
 
-When `stream` is `true`, the proxy bypasses Go's `httputil.ReverseProxy` and uses a raw HTTP tunnel. This is required for protocols that use long-lived HTTP requests with simultaneous upload and download (e.g. bidirectional streaming over POST/GET).
+Controls the HTTP protocol version used to communicate with the upstream server.
 
-In stream mode:
+| Value | Description |
+| ----- | ----------- |
+| _(empty)_ | HTTP/1.1 (default) |
+| `"h2"` | HTTP/2 cleartext (h2c) — HTTP/2 over plain TCP, no TLS |
 
-- The request is forwarded to upstream over a raw TCP connection
-- The request body is streamed in the background (upload continues while response flows)
-- The response body is flushed to the client immediately (no buffering)
-- WebSocket upgrades are still detected and handled normally
+HTTP/2 enables full-duplex streaming: the client can upload data while simultaneously receiving a response. This is required for protocols that use long-lived POST/GET pairs for bidirectional communication.
 
 > [!TIP]
-> Combine `stream: true` with a service-level [`config`](#service-config) that increases timeouts for long-lived connections.
+> Combine `proto: "h2"` with a service-level [`config`](#service-config) that increases timeouts and enables immediate flushing for streaming workloads.
 
 ```json5
+// HTTP/2 upstream — full-duplex streaming support.
 {
   match: { domain: "*.**" },
   action: {
     type: "proxy",
     upstream: "localhost:3501",
-    stream: true,
+    proto: "h2",
   },
 }
 ```
+
+#### Streaming mode (`stream`)
+
+When `stream` is `true`, the proxy bypasses `httputil.ReverseProxy` and uses a raw HTTP/1.1 tunnel. The request is forwarded over a raw TCP connection with the body streamed in a background goroutine, and the response is flushed immediately.
+
+> [!NOTE]
+> Prefer `proto: "h2"` for bidirectional streaming when the upstream supports HTTP/2. Use `stream: true` only for HTTP/1.1 upstreams that require raw tunnel behavior.
 
 ```json5
 // Route with variables and shared action.
