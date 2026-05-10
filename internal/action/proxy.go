@@ -1,6 +1,8 @@
 package action
 
 import (
+	"context"
+	"crypto/tls"
 	"log/slog"
 	"net"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/dortanes/prox/internal/config"
 	"github.com/dortanes/prox/internal/router"
+	"golang.org/x/net/http2"
 )
 
 // Proxy forwards requests to an upstream server.
@@ -22,8 +25,8 @@ type Proxy struct {
 	proxy  *httputil.ReverseProxy // static mode
 	target *url.URL
 
-	upstreamTpl   string         // dynamic mode template
-	transport     *http.Transport
+	upstreamTpl   string             // dynamic mode template
+	transport     http.RoundTripper   // h1 or h2 transport
 	flushInterval time.Duration
 	stream        bool // use raw HTTP tunnel for streaming
 
@@ -52,17 +55,7 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 		flushInterval = svcCfg.FlushInterval.Duration
 	}
 
-	transport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   timeout,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   10,
-		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: responseHeaderTimeout,
-		TLSHandshakeTimeout:   10 * time.Second,
-	}
+	transport := buildTransport(act.Proto, svcCfg, timeout, responseHeaderTimeout)
 
 	p := &Proxy{
 		headers: headers,
@@ -236,4 +229,73 @@ func resolveTemplate(tpl string, match *router.MatchResult) string {
 		s = strings.ReplaceAll(s, "{"+k+"}", v)
 	}
 	return s
+}
+
+// buildTransport creates the appropriate HTTP transport for the given protocol.
+// All tuning values are read from svcCfg with sensible defaults.
+//
+// Supported values for proto:
+//   - "" (empty): HTTP/1.1 transport (default)
+//   - "h2": HTTP/2 cleartext (h2c) — required for upstreams expecting HTTP/2
+//     over plain TCP (no TLS). Uses full-duplex streaming.
+func buildTransport(proto string, svcCfg *config.ServerConfig, dialTimeout, responseHeaderTimeout time.Duration) http.RoundTripper {
+	keepAlive := durationOr(svcCfg, func(c *config.ServerConfig) time.Duration { return c.KeepAlive.Duration }, 30*time.Second)
+	if svcCfg != nil && svcCfg.DialTimeout.Duration > 0 {
+		dialTimeout = svcCfg.DialTimeout.Duration
+	}
+
+	dialer := &net.Dialer{
+		Timeout:   dialTimeout,
+		KeepAlive: keepAlive,
+	}
+
+	if proto == "h2" {
+		readIdle := durationOr(svcCfg, func(c *config.ServerConfig) time.Duration { return c.H2ReadIdleTimeout.Duration }, 30*time.Second)
+		pingTimeout := durationOr(svcCfg, func(c *config.ServerConfig) time.Duration { return c.H2PingTimeout.Duration }, 15*time.Second)
+
+		return &http2.Transport{
+			AllowHTTP: true,
+			// DialTLSContext is used even for non-TLS (AllowHTTP) connections.
+			// We return a plain TCP connection — the transport handles h2c framing.
+			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, addr)
+			},
+			ReadIdleTimeout: readIdle,
+			PingTimeout:     pingTimeout,
+		}
+	}
+
+	maxIdle := 100
+	maxIdlePerHost := 10
+	tlsHandshake := 10 * time.Second
+	if svcCfg != nil {
+		if svcCfg.MaxIdleConns > 0 {
+			maxIdle = svcCfg.MaxIdleConns
+		}
+		if svcCfg.MaxIdleConnsPerHost > 0 {
+			maxIdlePerHost = svcCfg.MaxIdleConnsPerHost
+		}
+		if svcCfg.TLSHandshakeTimeout.Duration > 0 {
+			tlsHandshake = svcCfg.TLSHandshakeTimeout.Duration
+		}
+	}
+
+	return &http.Transport{
+		DialContext:           dialer.DialContext,
+		MaxIdleConns:          maxIdle,
+		MaxIdleConnsPerHost:   maxIdlePerHost,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+		TLSHandshakeTimeout:   tlsHandshake,
+	}
+}
+
+// durationOr returns the duration from svcCfg if non-zero, otherwise the fallback.
+func durationOr(svcCfg *config.ServerConfig, getter func(*config.ServerConfig) time.Duration, fallback time.Duration) time.Duration {
+	if svcCfg != nil {
+		if d := getter(svcCfg); d > 0 {
+			return d
+		}
+	}
+	return fallback
 }

@@ -45,6 +45,17 @@ type ServerConfig struct {
 	// to the client. Negative value (-1) flushes immediately (streaming).
 	// Zero uses the default buffered behavior.
 	FlushInterval Duration `json:"flush_interval,omitempty"`
+
+	// Transport tuning — connection pool and keep-alive.
+	DialTimeout         Duration `json:"dial_timeout,omitempty"`          // TCP dial timeout (default: action timeout)
+	KeepAlive           Duration `json:"keep_alive,omitempty"`            // TCP keep-alive interval (default: 30s)
+	MaxIdleConns        int      `json:"max_idle_conns,omitempty"`        // Max idle connections (default: 100)
+	MaxIdleConnsPerHost int      `json:"max_idle_conns_per_host,omitempty"` // Max idle per host (default: 10)
+	TLSHandshakeTimeout Duration `json:"tls_handshake_timeout,omitempty"` // TLS handshake deadline (default: 10s)
+
+	// HTTP/2 transport tuning.
+	H2ReadIdleTimeout Duration `json:"h2_read_idle_timeout,omitempty"` // Ping after idle (default: 30s)
+	H2PingTimeout     Duration `json:"h2_ping_timeout,omitempty"`     // Ping response deadline (default: 15s)
 }
 
 // Route binds a request matcher to an action — either by name or inline.
@@ -106,6 +117,7 @@ type Action struct {
 	Upstream string   `json:"upstream,omitempty"`
 	Timeout  Duration `json:"timeout,omitempty"`
 	Stream   bool     `json:"stream,omitempty"` // Use raw HTTP tunnel for bidirectional streaming.
+	Proto    string   `json:"proto,omitempty"`  // Upstream protocol: "" (auto), "h2" (HTTP/2 cleartext).
 
 	// Fallback action name — invoked when the primary action fails
 	// (e.g. no target selected, upstream unreachable).
