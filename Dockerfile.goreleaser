@@ -1,5 +1,9 @@
+FROM golang:1.25-alpine AS golang
+
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates go
+RUN apk add --no-cache ca-certificates git
+COPY --from=golang /usr/local/go /usr/local/go
+ENV PATH="/usr/local/go/bin:${PATH}"
 COPY prox /usr/local/bin/prox
 ENTRYPOINT ["prox"]
 CMD ["serve", "-config", "/etc/prox/config.json5"]
