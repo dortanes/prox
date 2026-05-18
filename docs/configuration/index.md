@@ -7,18 +7,19 @@ prox uses [JSON5](https://json5.org) for configuration — a superset of JSON wi
 Every config has three sections:
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    config.json5                      │
-├──────────────┬──────────────┬────────────────────────┤
-│   services   │   actions    │      resources         │
-│   (WHAT)     │   (HOW)      │      (WITH WHAT)       │
-│              │              │                        │
-│  listen addr │  type: proxy │  inline text           │
-│  tls on/off  │  type: static│                        │
-│  routes[]    │  type: serve │                        │
-│   └ match    │  timeout     │                        │
-│   └ action ──│──► ref ──────│──► body_ref → resource │
-└──────────────┴──────────────┴────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│                          config.json5                         │
+├──────────────┬──────────────┬───────────────┬─────────────────┤
+│   services   │   plugins    │    actions    │    resources    │
+│   (WHAT)     │(MIDDLEWARE)  │    (HOW)      │   (WITH WHAT)   │
+│              │              │               │                 │
+│  listen addr │  name        │  type: proxy  │  inline text    │
+│  tls on/off  │   └ path     │  type: static │                 │
+│  routes[]    │              │  type: serve  │                 │
+│   └ match    │              │  timeout      │                 │
+│   └ plugins ─│──► ref       │               │                 │
+│   └ action ──│──────────────│──► ref ───────│──► body_ref     │
+└──────────────┴──────────────┴───────────────┴─────────────────┘
 ```
 
 **Key concept:** everything is reference-based. Routes point to actions by name, actions point to resources by name. But you can also inline them directly when a definition isn't reused.

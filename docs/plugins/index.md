@@ -19,26 +19,39 @@ Plugins are external executables that extend prox at runtime. They can dynamical
 
 ## Configuration
 
-Add a `plugins` array to any route:
+Define your plugins in the global `plugins` block, and attach them to any route by referencing their alias in the `plugins` array:
 
 ```json5
 {
-  match: { domain: "*.example.com", path: "/api/*" },
-  plugins: ["./plugins/auth.go"],
-  plugin_timeout: "2s",   // optional (default: 5s)
-  action: { type: "proxy", upstream: "localhost:3000" },
+  plugins: {
+    auth: { path: "./plugins/auth.go" },
+  },
+  services: {
+    web: {
+      listen: ":443",
+      routes: [
+        {
+          match: { domain: "*.example.com", path: "/api/*" },
+          plugins: ["auth"],      // Reference plugin by alias
+          plugin_timeout: "2s",   // optional (default: 5s)
+          action: { type: "proxy", upstream: "localhost:3000" },
+        }
+      ]
+    }
+  }
 }
 ```
 
 ### Fields
 
-- `plugins` — list of plugin paths (binary, `.go` source, or Go package directory)
+- `plugins` — list of plugin aliases (or literal paths)
 - `plugin_timeout` — per-request timeout for plugin hook calls (default: 5s)
 
 ### Rules
 
-- Plugin paths are resolved relative to the config file's directory
-- Absolute paths are used as-is
+- Define `plugins` globally to map easy-to-read aliases to absolute or relative paths
+- Plugin paths are resolved relative to the config file's directory where they are defined
+- You can still define a raw path string (e.g. `"./plugins/auth.go"`) directly in the route `plugins` array
 - **`.go` source files are compiled automatically** — no manual build step needed
 - Pre-compiled binaries are used as-is (must be executable)
 - A `balancer` is required only when using target discovery (not for auth-only plugins)
@@ -50,14 +63,18 @@ Prox can compile plugin sources automatically — no manual build step needed.
 
 **Single file** — path ends in `.go`:
 
-```
-plugins: ["./plugins/auth.go"]  →  go build -o ./plugins/auth
+```json5
+  plugins: {
+    auth: { path: "./plugins/auth.go" } // → go build -o ./plugins/auth
+  }
 ```
 
 **Directory** — path points to a Go package directory:
 
-```
-plugins: ["./plugins/auth/"]  →  go build -o ./plugins/auth
+```json5
+  plugins: {
+    auth: { path: "./plugins/auth/" } // → go build -o ./plugins/auth
+  }
 ```
 
 Compiled binaries are placed next to the source. Rebuilds are **skipped** if the binary is newer than the source (mtime check).
