@@ -23,6 +23,7 @@ func Validate(cfg *Config) error {
 	v := &validator{cfg: cfg}
 
 	v.validateServices()
+	v.validatePluginsRegistry()
 	v.validateActions()
 
 	if len(v.issues) > 0 {
@@ -280,6 +281,18 @@ func (v *validator) validatePlugins(prefix string, route *Route) {
 	for i, p := range route.Plugins {
 		if p == "" {
 			v.addIssue("%s: plugins[%d] is empty", prefix, i)
+		}
+	}
+}
+
+func (v *validator) validatePluginsRegistry() {
+	if len(v.cfg.Plugins) == 0 {
+		return
+	}
+
+	for name, plugin := range v.cfg.Plugins {
+		if plugin.Path == "" {
+			v.addIssue("plugin %q: path is required", name)
 		}
 	}
 }

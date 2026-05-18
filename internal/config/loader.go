@@ -117,6 +117,7 @@ func checkFilePermissions(path string) {
 // or string file/directory references.
 type rawConfig struct {
 	Services  map[string]rawServiceEntry `json:"services"`
+	Plugins   map[string]*Plugin         `json:"plugins"`
 	Actions   map[string]*Action         `json:"actions"`
 	Resources map[string]*Resource       `json:"resources"`
 }
@@ -194,9 +195,13 @@ func (lc *loadContext) loadRootFile(path string) (*Config, error) {
 	baseDir := filepath.Dir(absPath)
 
 	cfg := &Config{
+		Plugins:   raw.Plugins,
 		Actions:   raw.Actions,
 		Resources: raw.Resources,
 		Services:  make(map[string]*Service),
+	}
+	if cfg.Plugins == nil {
+		cfg.Plugins = make(map[string]*Plugin)
 	}
 	if cfg.Actions == nil {
 		cfg.Actions = make(map[string]*Action)
@@ -277,6 +282,7 @@ func (lc *loadContext) loadDirectory(dir string) (*Config, error) {
 
 	cfg := &Config{
 		Services:  make(map[string]*Service),
+		Plugins:   make(map[string]*Plugin),
 		Actions:   make(map[string]*Action),
 		Resources: make(map[string]*Resource),
 	}
@@ -315,6 +321,7 @@ type rawFragment struct {
 	TLSKey    string               `json:"tls_key,omitempty"`
 	Config    *ServerConfig        `json:"config,omitempty"`
 	Routes    []rawRouteEntry      `json:"routes"`
+	Plugins   map[string]*Plugin   `json:"plugins"`
 	Actions   map[string]*Action   `json:"actions"`
 	Resources map[string]*Resource `json:"resources"`
 }
@@ -347,6 +354,14 @@ func (lc *loadContext) loadFragment(path string, parent *Config) (*Service, erro
 			return nil, fmt.Errorf("duplicate action %q (already defined in another config)", name)
 		}
 		parent.Actions[name] = act
+	}
+
+	// Merge fragment plugins into the parent config.
+	for name, p := range frag.Plugins {
+		if _, exists := parent.Plugins[name]; exists {
+			return nil, fmt.Errorf("duplicate plugin %q (already defined in another config)", name)
+		}
+		parent.Plugins[name] = p
 	}
 
 	// Merge fragment resources into the parent config.

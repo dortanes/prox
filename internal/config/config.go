@@ -16,8 +16,14 @@ import (
 // Config is the root configuration object.
 type Config struct {
 	Services  map[string]*Service  `json:"services"`
+	Plugins   map[string]*Plugin   `json:"plugins"`
 	Actions   map[string]*Action   `json:"actions"`
 	Resources map[string]*Resource `json:"resources"`
+}
+
+// Plugin defines global configuration for an external plugin.
+type Plugin struct {
+	Path string `json:"path"`
 }
 
 // Service defines a single listener with its routing rules.

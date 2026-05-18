@@ -70,6 +70,72 @@ func TestLoad_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestLoad_PluginsRegistry(t *testing.T) {
+	raw := `{
+		"plugins": {
+			"auth": { "path": "/path/to/auth.go" }
+		},
+		"services": {
+			"web": {
+				"listen": ":8080",
+				"routes": [
+					{
+						"match": { "path": "/" },
+						"plugins": ["auth"],
+						"action": "a"
+					}
+				]
+			}
+		},
+		"actions": {
+			"a": { "type": "proxy", "upstream": "localhost:80" }
+		}
+	}`
+
+	cfg, err := Load([]byte(raw))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	plugin, ok := cfg.Plugins["auth"]
+	if !ok {
+		t.Fatal("expected 'auth' plugin in registry")
+	}
+	if plugin.Path != "/path/to/auth.go" {
+		t.Errorf("expected path '/path/to/auth.go', got %q", plugin.Path)
+	}
+}
+
+func TestLoad_PluginsRegistryValidation(t *testing.T) {
+	raw := `{
+		"plugins": {
+			"auth": {} // missing path
+		},
+		"services": {
+			"web": {
+				"listen": ":80",
+				"routes": [
+					{
+						"match": { "path": "/" },
+						"action": "a"
+					}
+				]
+			}
+		},
+		"actions": {
+			"a": { "type": "proxy", "upstream": "localhost:80" }
+		}
+	}`
+
+	_, err := Load([]byte(raw))
+	if err == nil {
+		t.Fatal("expected validation error for plugin without path")
+	}
+	if !strings.Contains(err.Error(), "plugin \"auth\": path is required") {
+		t.Errorf("error should mention missing path, got: %v", err)
+	}
+}
+
 func TestLoad_BrokenActionRef(t *testing.T) {
 	raw := `{
 		"services": {
