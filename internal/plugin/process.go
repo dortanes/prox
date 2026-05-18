@@ -116,13 +116,8 @@ func buildPluginFile(path string, srcInfo os.FileInfo) (string, error) {
 	)
 
 	absBin, _ := filepath.Abs(binPath)
-	cmd := exec.Command("go", "build", "-o", absBin, filename)
-	cmd.Dir = dir
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("building plugin %q: %w", path, err)
+	if err := runBuild(dir, "-o", absBin, filename); err != nil {
+		return "", err
 	}
 
 	return binPath, nil
@@ -166,13 +161,8 @@ func buildPluginDir(dir string) (string, error) {
 		"output", filepath.Base(binPath),
 	)
 
-	cmd := exec.Command("go", "build", "-o", binPath, ".")
-	cmd.Dir = absDir
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("building plugin %q: %w", dir, err)
+	if err := runBuild(absDir, "-o", binPath, "."); err != nil {
+		return "", err
 	}
 
 	return binPath, nil
@@ -191,6 +181,50 @@ func skipBuild(binPath string, srcMod time.Time) bool {
 		return true
 	}
 	return false
+}
+
+// runBuild runs the 'go build' command. If it fails and a go.mod file is present
+// in the plugin directory, it attempts to resolve missing dependencies by running
+// 'go mod tidy' and then retries the build.
+func runBuild(dir string, args ...string) error {
+	cmd := exec.Command("go", append([]string{"build"}, args...)...)
+	cmd.Dir = dir
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = os.Stdout
+
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+
+	goModPath := filepath.Join(dir, "go.mod")
+	if _, statErr := os.Stat(goModPath); statErr == nil {
+		slog.Debug("plugin build failed; attempting to resolve dependencies", "dir", dir, "error", err)
+		if tidyErr := tidyPluginDir(dir); tidyErr != nil {
+			slog.Debug("failed to tidy plugin dependencies", "dir", dir, "error", tidyErr)
+		} else {
+			slog.Info("retrying plugin build after resolving dependencies", "dir", dir)
+			cmdRetry := exec.Command("go", append([]string{"build"}, args...)...)
+			cmdRetry.Dir = dir
+			cmdRetry.Stderr = os.Stderr
+			cmdRetry.Stdout = os.Stdout
+			if retryErr := cmdRetry.Run(); retryErr == nil {
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("building plugin: %w", err)
+}
+
+// tidyPluginDir runs `go mod tidy` in the plugin directory if go.mod is present.
+func tidyPluginDir(dir string) error {
+	slog.Info("tidying plugin dependencies", "dir", dir)
+	cmd := exec.Command("go", "mod", "tidy")
+	cmd.Dir = dir
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = os.Stdout
+	return cmd.Run()
 }
 
 // Send writes a JSON request to the plugin's stdin.
