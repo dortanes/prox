@@ -98,17 +98,25 @@ func resolvePluginBinary(path string) (string, error) {
 	return path, nil
 }
 
-// buildPluginFile compiles a single .go source file into a sibling binary.
+// buildPluginFile compiles a .go source file's package into a sibling binary.
+// Builds the entire package directory (not just the single file) so that
+// all .go files in the package are included.
 func buildPluginFile(path string, srcInfo os.FileInfo) (string, error) {
 	binPath := strings.TrimSuffix(path, ".go")
 
-	if skipBuild(binPath, srcInfo.ModTime()) {
-		return binPath, nil
-	}
-
 	absPath, _ := filepath.Abs(path)
 	dir := filepath.Dir(absPath)
-	filename := filepath.Base(absPath)
+
+	// Check the newest .go file in the directory for mtime comparison,
+	// since the entire package is compiled.
+	newestMod := newestGoFile(dir)
+	if newestMod == nil {
+		newestMod = srcInfo
+	}
+
+	if skipBuild(binPath, newestMod.ModTime()) {
+		return binPath, nil
+	}
 
 	slog.Info("building plugin",
 		"source", filepath.Base(path),
@@ -116,7 +124,7 @@ func buildPluginFile(path string, srcInfo os.FileInfo) (string, error) {
 	)
 
 	absBin, _ := filepath.Abs(binPath)
-	if err := runBuild(dir, "-o", absBin, filename); err != nil {
+	if err := runBuild(dir, "-o", absBin, "."); err != nil {
 		return "", err
 	}
 
@@ -128,26 +136,7 @@ func buildPluginDir(dir string) (string, error) {
 	absDir, _ := filepath.Abs(dir)
 	binPath := absDir // ./plugins/resolver/ → ./plugins/resolver (binary)
 
-	// Check the newest .go file in the directory for mtime comparison.
-	entries, err := os.ReadDir(absDir)
-	if err != nil {
-		return "", fmt.Errorf("reading plugin dir %q: %w", dir, err)
-	}
-
-	var newestMod os.FileInfo
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if newestMod == nil || info.ModTime().After(newestMod.ModTime()) {
-			newestMod = info
-		}
-	}
-
+	newestMod := newestGoFile(absDir)
 	if newestMod == nil {
 		return "", fmt.Errorf("plugin dir %q contains no .go files", dir)
 	}
@@ -166,6 +155,29 @@ func buildPluginDir(dir string) (string, error) {
 	}
 
 	return binPath, nil
+}
+
+// newestGoFile returns the os.FileInfo of the most recently modified .go file
+// in the directory. Returns nil if the directory contains no .go files.
+func newestGoFile(dir string) os.FileInfo {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var newest os.FileInfo
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if newest == nil || info.ModTime().After(newest.ModTime()) {
+			newest = info
+		}
+	}
+	return newest
 }
 
 // skipBuild returns true if the binary exists and is newer than srcMod.
