@@ -1,4 +1,12 @@
 {
+  // Logging configuration.
+  // Level can be overridden by LOG_LEVEL environment variable.
+  logging: {
+    level: "info",
+    access_log: "/var/log/prox/access.log",
+    error_log: "/var/log/prox/error.log",
+  },
+
   // Global plugins registry.
   plugins: {
     resolver: { path: "./plugins/resolver" },
@@ -27,6 +35,8 @@
         // API — proxy to backend with timeout.
         {
           match: { path: "/api/*" },
+          // Per-route access log — requests to /api/* go to a separate file.
+          access_log: "/var/log/prox/api-access.log",
           action: {
             type: "proxy",
             upstream: "localhost:3000",

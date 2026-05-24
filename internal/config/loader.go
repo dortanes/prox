@@ -120,6 +120,7 @@ type rawConfig struct {
 	Plugins   map[string]*Plugin         `json:"plugins"`
 	Actions   map[string]*Action         `json:"actions"`
 	Resources map[string]*Resource       `json:"resources"`
+	Logging   *LoggingConfig             `json:"logging,omitempty"`
 }
 
 // rawServiceEntry holds either an inline Service or a string path.
@@ -198,6 +199,7 @@ func (lc *loadContext) loadRootFile(path string) (*Config, error) {
 		Plugins:   raw.Plugins,
 		Actions:   raw.Actions,
 		Resources: raw.Resources,
+		Logging:   raw.Logging,
 		Services:  make(map[string]*Service),
 	}
 	if cfg.Plugins == nil {

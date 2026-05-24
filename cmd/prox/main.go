@@ -17,6 +17,7 @@ import (
 	"syscall"
 
 	"github.com/dortanes/prox/internal/config"
+	"github.com/dortanes/prox/internal/logger"
 	"github.com/dortanes/prox/internal/server"
 	"github.com/dortanes/prox/internal/watcher"
 )
@@ -84,13 +85,24 @@ func runServe(args []string) int {
 	watchEnabled := fs.Bool("watch", true, "watch config files for changes and auto-reload")
 	_ = fs.Parse(args)
 
-	initLogger(*logLevel)
+	// Priority: LOG_LEVEL env > -log-level flag > config file > "info"
+	level := *logLevel
+	if envLevel := os.Getenv("LOG_LEVEL"); envLevel != "" {
+		level = envLevel
+	}
+
+	// Early init — console only (config not loaded yet).
+	if err := logger.Setup(logger.Config{Level: level}); err != nil {
+		fmt.Fprintf(os.Stderr, "logger init error: %v\n", err)
+		return 1
+	}
+	defer logger.Close()
 
 	slog.Info("loading configuration", "path", *configPath)
 
 	result, err := config.LoadFile(*configPath)
 	if err != nil {
-		slog.Error("configuration error", "error", err)
+		slog.Error("config load failed", "err", err)
 		if config.IsValidationError(err) {
 			fmt.Fprintf(os.Stderr, "\n%s\n", err)
 		}
@@ -99,7 +111,27 @@ func runServe(args []string) int {
 
 	cfg := result.Config
 
-	slog.Info("configuration loaded",
+	// Re-init logger with full config (file handlers).
+	logCfg := logger.Config{Level: level}
+	if cfg.Logging != nil {
+		logCfg.ErrorLog = cfg.Logging.ErrorLog
+		// Config level is lowest priority.
+		if level == "info" && cfg.Logging.Level != "" {
+			logCfg.Level = cfg.Logging.Level
+		}
+	}
+	if err := logger.Setup(logCfg); err != nil {
+		slog.Error("logger setup error", "err", err)
+		return 1
+	}
+
+	// Setup access logging.
+	if err := setupAccessLogging(cfg); err != nil {
+		slog.Error("access log setup error", "err", err)
+		return 1
+	}
+
+	slog.Info("config loaded",
 		"services", len(cfg.Services),
 		"actions", len(cfg.Actions),
 		"resources", len(cfg.Resources),
@@ -108,7 +140,7 @@ func runServe(args []string) int {
 
 	group, err := server.Build(cfg)
 	if err != nil {
-		slog.Error("server build error", "error", err)
+		slog.Error("server build failed", "err", err)
 		return 1
 	}
 
@@ -134,7 +166,11 @@ func runServe(args []string) int {
 	signal.Notify(sighupCh, syscall.SIGHUP)
 	go func() {
 		for range sighupCh {
-			slog.Info("SIGHUP received, scheduling reload")
+			slog.Info("SIGHUP received")
+			// Reopen log files for rotation support.
+			if err := logger.ReopenFiles(); err != nil {
+				slog.Error("failed to reopen log files", "err", err)
+			}
 			triggerReload(reloadCh)
 		}
 	}()
@@ -143,7 +179,7 @@ func runServe(args []string) int {
 		go watcher.Watch(ctx, result.Paths, func() {
 			triggerReload(reloadCh)
 		})
-		slog.Info("config file watcher enabled", "files", len(result.Paths))
+		slog.Info("file watcher started", "files", len(result.Paths))
 	}
 
 	go func() {
@@ -158,7 +194,7 @@ func runServe(args []string) int {
 	}()
 
 	if err := group.ListenAndServe(ctx); err != nil {
-		slog.Error("server error", "error", err)
+		slog.Error("server failed", "err", err)
 		return 1
 	}
 
@@ -175,23 +211,49 @@ func triggerReload(ch chan struct{}) {
 }
 
 func performReload(path string, group *server.Group) {
-	slog.Info("reloading configuration", "path", path)
+	slog.Info("reloading config", "path", path)
 
 	result, err := config.LoadFile(path)
 	if err != nil {
-		slog.Error("reload failed: invalid config, keeping current",
+		slog.Error("reload failed",
 			"path", path,
-			"error", err,
+			"err", err,
 		)
+		return
+	}
+
+	// Reconfigure access logging for new routes.
+	if err := setupAccessLogging(result.Config); err != nil {
+		slog.Error("reload failed", "err", err)
 		return
 	}
 
 	if err := group.Reload(result.Config); err != nil {
-		slog.Error("reload failed: could not apply config, keeping current",
-			"error", err,
+		slog.Error("reload failed",
+			"err", err,
 		)
 		return
 	}
+}
+
+// setupAccessLogging configures global and per-route access log files from the config.
+func setupAccessLogging(cfg *config.Config) error {
+	globalPath := ""
+	if cfg.Logging != nil {
+		globalPath = cfg.Logging.AccessLog
+	}
+
+	routePaths := make(map[string]string)
+	for name, svc := range cfg.Services {
+		for i, route := range svc.Routes {
+			if route.AccessLog != "" {
+				routeID := fmt.Sprintf("%s:%d", name, i)
+				routePaths[routeID] = route.AccessLog
+			}
+		}
+	}
+
+	return logger.SetupAccess(globalPath, routePaths)
 }
 
 // runValidate checks the config and exits with 0 (valid) or 1 (invalid).
@@ -211,23 +273,3 @@ func runValidate(args []string) int {
 	return 0
 }
 
-// initLogger sets up structured logging with the given level.
-func initLogger(level string) {
-	var lvl slog.Level
-
-	switch level {
-	case "debug":
-		lvl = slog.LevelDebug
-	case "warn":
-		lvl = slog.LevelWarn
-	case "error":
-		lvl = slog.LevelError
-	default:
-		lvl = slog.LevelInfo
-	}
-
-	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: lvl,
-	})
-	slog.SetDefault(slog.New(handler))
-}
