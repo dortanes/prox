@@ -2,9 +2,7 @@
 
 Modular reverse proxy with config-driven routing, load balancing, L4/L7 dispatching, hot reload, and plugin middleware.
 
-[![CI](https://github.com/dortanes/prox/actions/workflows/ci.yml/badge.svg)](https://github.com/dortanes/prox/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/badge/go-%E2%89%A5%201.25-brightgreen.svg)](https://golang.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/dortanes/prox/actions/workflows/ci.yml/badge.svg)](https://github.com/dortanes/prox/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/dortanes/prox.svg)](https://pkg.go.dev/github.com/dortanes/prox) [![Go Report Card](https://goreportcard.com/badge/github.com/dortanes/prox)](https://goreportcard.com/report/github.com/dortanes/prox) [![GitHub Release](https://img.shields.io/github/v/release/dortanes/prox?logo=github&color=blue)](https://github.com/dortanes/prox/releases) [![Go Version](https://img.shields.io/badge/go-%E2%89%A5%201.25-brightgreen.svg)](https://golang.org/) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **[Documentation](https://dortanes.github.io/prox)** · [Getting Started](https://dortanes.github.io/prox/getting-started) · [Configuration](https://dortanes.github.io/prox/configuration/) · [Plugins](https://dortanes.github.io/prox/plugins/) · [Deployment](https://dortanes.github.io/prox/deployment)
 
@@ -22,6 +20,21 @@ Or build from source:
 
 ```bash
 go build -o prox ./cmd/prox
+```
+
+## Docker
+
+```yaml
+services:
+  prox:
+    image: ghcr.io/dortanes/prox:latest
+    ports:
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - ./config/:/etc/prox/config/
+      - ./certs/:/etc/prox/certs/
+    command: ["serve", "-config", "/etc/prox/config/"]
 ```
 
 ## Features
@@ -169,26 +182,11 @@ Comparison with popular proxies — same machine, same upstream, same load tool 
 - **Load:** `wrk -t4 -c256 -d10s`, 3 runs per proxy, best result used
 - **Upstream:** Go HTTP server returning `200 OK` (2 bytes)
 - **Config:** Minimal reverse proxy config, logging disabled, no TLS
-- **Tuning:** `SO_REUSEPORT` enabled with multiple parallel acceptor loops (tuned to `PROX_WORKERS=2` on macOS to eliminate kqueue scheduler contention), production Go compiler optimizations (`-ldflags="-s -w"`), and disabled background GC sweeps (`GOGC=off` for benchmark duration) to maximize raw scheduler throughput.
+- **Tuning:** `SO_REUSEPORT` enabled with multiple parallel acceptor loops (tuned to `PROX_WORKERS=2` on macOS to eliminate kqueue scheduler contention), platform-specific socket optimizations (like `TCP_DEFER_ACCEPT` on Linux to avoid waking worker threads until request data is ready to read), production Go compiler optimizations (`-ldflags="-s -w"`), and disabled background GC sweeps (`GOGC=off` for benchmark duration) to maximize raw scheduler throughput.
 - **Reproduce:** `bash bench/run.sh` (requires `brew install wrk nginx haproxy caddy traefik`)
 </details>
 
 > Results depend on hardware, OS, and workload. Run `bench/run.sh` on your own machine for accurate numbers.
-
-## Docker
-
-```yaml
-services:
-  prox:
-    image: ghcr.io/dortanes/prox:latest
-    ports:
-      - "443:443"
-      - "8080:8080"
-    volumes:
-      - ./config/:/etc/prox/config/
-      - ./certs/:/etc/prox/certs/
-    command: ["serve", "-config", "/etc/prox/config/"]
-```
 
 ## License
 
