@@ -51,7 +51,9 @@ func upstream(t *testing.T, label string) int {
 		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
 		Handler: mux,
 	}
-	go srv.ListenAndServe()
+	go func() {
+		_ = srv.ListenAndServe()
+	}()
 	t.Cleanup(func() { srv.Close() })
 
 	// Wait for upstream to be ready.
@@ -121,7 +123,7 @@ func httpMethod(t *testing.T, method, url string) int {
 		t.Fatalf("httpMethod %s %s: %v", method, url, err)
 	}
 	defer resp.Body.Close()
-	io.ReadAll(resp.Body)
+	_, _ = io.ReadAll(resp.Body)
 	return resp.StatusCode
 }
 

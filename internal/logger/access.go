@@ -143,7 +143,7 @@ func LogAccess(routeID string, entry AccessEntry) {
 		return
 	}
 	data = append(data, '\n')
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 // AccessReopenFiles reopens all access log files (called during SIGHUP rotation).

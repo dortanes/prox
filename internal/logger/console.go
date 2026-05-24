@@ -68,11 +68,11 @@ func (h *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 		ts = time.Now()
 	}
 	h.writeTimestamp(buf, ts)
-	buf.WriteByte(' ')
+	buf.AppendByte(' ')
 
 	// Level tag (3 chars, colored).
 	h.writeLevel(buf, r.Level)
-	buf.WriteByte(' ')
+	buf.AppendByte(' ')
 
 	// Message.
 	buf.WriteString(r.Message)
@@ -88,7 +88,7 @@ func (h *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 		return true
 	})
 
-	buf.WriteByte('\n')
+	buf.AppendByte('\n')
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -154,7 +154,7 @@ func (h *ConsoleHandler) writeAttr(buf *buffer, a slog.Attr) {
 		return
 	}
 
-	buf.WriteByte(' ')
+	buf.AppendByte(' ')
 
 	key := a.Key
 	if h.group != "" {
@@ -164,11 +164,11 @@ func (h *ConsoleHandler) writeAttr(buf *buffer, a slog.Attr) {
 	if h.color {
 		buf.WriteString(ansiDim)
 		buf.WriteString(key)
-		buf.WriteByte('=')
+		buf.AppendByte('=')
 		buf.WriteString(ansiReset)
 	} else {
 		buf.WriteString(key)
-		buf.WriteByte('=')
+		buf.AppendByte('=')
 	}
 
 	val := formatValue(a.Value)
@@ -243,7 +243,7 @@ func newBuffer() *buffer {
 	return b
 }
 
-func (b *buffer) WriteByte(c byte) error { b.buf = append(b.buf, c); return nil }
+func (b *buffer) AppendByte(c byte)     { b.buf = append(b.buf, c) }
 func (b *buffer) WriteString(s string)   { b.buf = append(b.buf, s...) }
 func (b *buffer) Bytes() []byte          { return b.buf }
 

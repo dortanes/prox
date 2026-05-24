@@ -79,7 +79,7 @@ func (fp *fastStaticProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Copy the response body using a pooled buffer.
 	buf := proxyBufPool{}.Get()
-	io.CopyBuffer(w, resp.Body, buf)
+	_, _ = io.CopyBuffer(w, resp.Body, buf)
 	proxyBufPool{}.Put(buf)
 }
 

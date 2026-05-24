@@ -63,16 +63,6 @@ type managed struct {
 	hooks   []string  // declared hook capabilities
 }
 
-// hasHook returns true if this plugin declared the given hook.
-func (mg *managed) hasHook(hook string) bool {
-	for _, h := range mg.hooks {
-		if h == hook {
-			return true
-		}
-	}
-	return false
-}
-
 // NewManager creates a plugin manager. Call Start() to spawn processes.
 func NewManager() *Manager {
 	return &Manager{
