@@ -297,6 +297,15 @@ func (v *validator) validatePluginsRegistry() {
 	}
 }
 
+func (v *validator) hasAutostartPlugins() bool {
+	for _, p := range v.cfg.Plugins {
+		if p.Autostart {
+			return true
+		}
+	}
+	return false
+}
+
 func (v *validator) validateBalancer(prefix string, route *Route) {
 	bal := route.Balancer
 
@@ -310,8 +319,9 @@ func (v *validator) validateBalancer(prefix string, route *Route) {
 			prefix, bal.Type, BalancerRoundRobin, BalancerRandom, BalancerLeastConn)
 	}
 
-	// Empty targets are valid when plugins will populate them.
-	if len(bal.Targets) == 0 && len(route.Plugins) == 0 {
+	// Empty targets are valid when plugins will populate them
+	// (either route-bound plugins or global autostart plugins).
+	if len(bal.Targets) == 0 && len(route.Plugins) == 0 && !v.hasAutostartPlugins() {
 		v.addIssue("%s: balancer.targets must have at least one entry (or use plugins)", prefix)
 	}
 

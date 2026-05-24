@@ -23,7 +23,8 @@ type Config struct {
 
 // Plugin defines global configuration for an external plugin.
 type Plugin struct {
-	Path string `json:"path"`
+	Path      string `json:"path"`
+	Autostart bool   `json:"autostart,omitempty"` // start at proxy startup without route bindings
 }
 
 // Service defines a single listener with its routing rules.

@@ -2,6 +2,10 @@
   // Global plugins registry.
   plugins: {
     resolver: { path: "./plugins/resolver" },
+
+    // Autostart plugins are spawned at startup without route bindings.
+    // Useful for background routines, health monitors, metrics, etc.
+    routines: { path: "./plugins/routines", autostart: true },
   },
 
   // A web app with domain-based routing, API backend, and static frontend.

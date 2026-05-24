@@ -61,13 +61,14 @@ func Build(cfg *config.Config) (*Group, error) {
 	// Collect route balancers for plugin binding (first pass).
 	routeBalancers := make(map[string]bal.Balancer)
 	routers := make(map[string]*router.Router)
+	autostart := hasAutostartPlugins(cfg)
 
 	for name, svc := range cfg.Services {
 		rt := router.New(svc.Routes)
 		routers[name] = rt
 
 		for i, route := range svc.Routes {
-			if route.Balancer != nil && len(route.Plugins) > 0 {
+			if route.Balancer != nil && (len(route.Plugins) > 0 || autostart) {
 				inner := rt.RouteBalancer(i)
 				if inner != nil {
 					grouped := bal.NewGrouped(string(route.Balancer.Type), inner)
@@ -87,8 +88,9 @@ func Build(cfg *config.Config) (*Group, error) {
 	// Build plugin manager before servers so handlers can reference it.
 	bindings := buildPluginBindings(cfg, routeBalancers)
 	if len(bindings) > 0 {
+		routeInfo := buildRouteInfo(cfg, routeBalancers)
 		g.plugins = plugin.NewManager()
-		g.plugins.Configure(bindings)
+		g.plugins.Configure(bindings, routeInfo)
 		slog.Info("plugin bindings configured", "count", len(bindings))
 	}
 
@@ -152,9 +154,9 @@ func (g *Group) Reload(cfg *config.Config) error {
 			}
 		}
 
-		// For plugin-managed routes, wrap the balancer in a Grouped balancer.
+		// Wrap balancers in Grouped for plugin-managed or autostart-targeted routes.
 		for i, route := range svc.Routes {
-			if route.Balancer != nil && len(route.Plugins) > 0 {
+			if route.Balancer != nil && (len(route.Plugins) > 0 || hasAutostartPlugins(cfg)) {
 				inner := rt.RouteBalancer(i)
 				if inner != nil {
 					grouped := bal.NewGrouped(string(route.Balancer.Type), inner)
@@ -177,16 +179,17 @@ func (g *Group) Reload(cfg *config.Config) error {
 
 	// Reconfigure plugins.
 	bindings := buildPluginBindings(cfg, routeBalancers)
+	routeInfo := buildRouteInfo(cfg, routeBalancers)
 	if g.plugins != nil {
 		if len(bindings) > 0 {
-			g.plugins.Reconfigure(bindings)
+			g.plugins.Reconfigure(bindings, routeInfo)
 		} else {
 			g.plugins.Stop()
 			g.plugins = nil
 		}
 	} else if len(bindings) > 0 {
 		g.plugins = plugin.NewManager()
-		g.plugins.Configure(bindings)
+		g.plugins.Configure(bindings, routeInfo)
 		_ = g.plugins.Start(context.Background())
 	}
 
@@ -827,9 +830,22 @@ func buildRouteHints(cfg *config.Config) *action.RouteHints {
 	return hints
 }
 
+// hasAutostartPlugins returns true if any plugin in the config has autostart enabled.
+func hasAutostartPlugins(cfg *config.Config) bool {
+	for _, p := range cfg.Plugins {
+		if p.Autostart {
+			return true
+		}
+	}
+	return false
+}
+
 // buildPluginBindings creates plugin-to-route bindings from the config.
 func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) []*plugin.Binding {
 	var bindings []*plugin.Binding
+
+	// Track which plugin paths already have route bindings.
+	bound := make(map[string]bool)
 
 	for name, svc := range cfg.Services {
 		for i, route := range svc.Routes {
@@ -864,6 +880,8 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 					continue
 				}
 
+				bound[absPath] = true
+
 				bindings = append(bindings, &plugin.Binding{
 					RouteID:  routeID,
 					Plugin:   absPath,
@@ -875,7 +893,60 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 		}
 	}
 
+	// Append autostart plugins that have no route bindings.
+	for name, p := range cfg.Plugins {
+		if !p.Autostart {
+			continue
+		}
+
+		absPath, err := filepath.Abs(p.Path)
+		if err != nil {
+			slog.Warn("invalid autostart plugin path",
+				"plugin", name,
+				"path", p.Path,
+				"error", err,
+			)
+			continue
+		}
+
+		if bound[absPath] {
+			continue // already started via route binding
+		}
+
+		bindings = append(bindings, &plugin.Binding{
+			Plugin: absPath,
+		})
+	}
+
 	return bindings
+}
+
+// buildRouteInfo creates a map of all routes with balancers and their action names.
+// This gives the plugin manager the full picture for action-based and wildcard target pushes.
+func buildRouteInfo(cfg *config.Config, balancers map[string]bal.Balancer) map[string]*plugin.RouteInfo {
+	info := make(map[string]*plugin.RouteInfo)
+
+	for name, svc := range cfg.Services {
+		for i, route := range svc.Routes {
+			routeID := fmt.Sprintf("%s:%d", name, i)
+			b, ok := balancers[routeID]
+			if !ok {
+				continue
+			}
+
+			action := route.Action.Name
+			if action == "" && route.Action.Inline != nil {
+				action = routeID // use route ID as fallback for inline actions
+			}
+
+			info[routeID] = &plugin.RouteInfo{
+				Action:   action,
+				Balancer: b,
+			}
+		}
+	}
+
+	return info
 }
 
 // --- connection limiter ---
