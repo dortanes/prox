@@ -19,6 +19,14 @@ type Config struct {
 	Plugins   map[string]*Plugin   `json:"plugins"`
 	Actions   map[string]*Action   `json:"actions"`
 	Resources map[string]*Resource `json:"resources"`
+	Logging   *LoggingConfig       `json:"logging,omitempty"`
+}
+
+// LoggingConfig controls log output destinations and verbosity.
+type LoggingConfig struct {
+	Level     string `json:"level,omitempty"`      // debug, info, warn, error (overridden by LOG_LEVEL env)
+	AccessLog string `json:"access_log,omitempty"` // global access log file path
+	ErrorLog  string `json:"error_log,omitempty"`  // global error log file path
 }
 
 // Plugin defines global configuration for an external plugin.
@@ -54,11 +62,22 @@ type ServerConfig struct {
 	FlushInterval Duration `json:"flush_interval,omitempty"`
 
 	// Transport tuning — connection pool and keep-alive.
-	DialTimeout         Duration `json:"dial_timeout,omitempty"`          // TCP dial timeout (default: action timeout)
-	KeepAlive           Duration `json:"keep_alive,omitempty"`            // TCP keep-alive interval (default: 30s)
-	MaxIdleConns        int      `json:"max_idle_conns,omitempty"`        // Max idle connections (default: 100)
-	MaxIdleConnsPerHost int      `json:"max_idle_conns_per_host,omitempty"` // Max idle per host (default: 10)
-	TLSHandshakeTimeout Duration `json:"tls_handshake_timeout,omitempty"` // TLS handshake deadline (default: 10s)
+	DialTimeout         Duration `json:"dial_timeout,omitempty"`            // TCP dial timeout (default: action timeout)
+	KeepAlive           Duration `json:"keep_alive,omitempty"`              // TCP keep-alive interval (default: 30s)
+	MaxIdleConns        int      `json:"max_idle_conns,omitempty"`          // Max idle connections (default: 256)
+	MaxIdleConnsPerHost int      `json:"max_idle_conns_per_host,omitempty"` // Max idle per host (default: 128)
+	TLSHandshakeTimeout Duration `json:"tls_handshake_timeout,omitempty"`   // TLS handshake deadline (default: 10s)
+
+	// Transport I/O buffer sizes in bytes (default: 65536).
+	ReadBufferSize  int `json:"read_buffer_size,omitempty"`
+	WriteBufferSize int `json:"write_buffer_size,omitempty"`
+
+	// DisableCompression prevents the proxy from requesting gzip from upstreams.
+	// When true (default), the client's Accept-Encoding is forwarded as-is and
+	// compressed responses pass through without re-encoding — more efficient
+	// for reverse proxy workloads. Set to false to let Go decompress upstream
+	// responses transparently.
+	DisableCompression *bool `json:"disable_compression,omitempty"`
 
 	// HTTP/2 transport tuning.
 	H2ReadIdleTimeout Duration `json:"h2_read_idle_timeout,omitempty"` // Ping after idle (default: 30s)
@@ -79,6 +98,7 @@ type Route struct {
 	Balancer      *BalancerConfig   `json:"balancer,omitempty"`
 	Set           map[string]string `json:"set,omitempty"`
 	Action        ActionRef         `json:"action"`
+	AccessLog     string            `json:"access_log,omitempty"` // per-route access log file path
 }
 
 // Match defines the criteria for a route to activate.

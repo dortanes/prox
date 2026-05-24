@@ -21,6 +21,7 @@ import (
 	bal "github.com/dortanes/prox/internal/balancer"
 	"github.com/dortanes/prox/internal/config"
 	"github.com/dortanes/prox/internal/dispatcher"
+	"github.com/dortanes/prox/internal/logger"
 	"github.com/dortanes/prox/internal/plugin"
 	"github.com/dortanes/prox/internal/resource"
 	"github.com/dortanes/prox/internal/router"
@@ -91,7 +92,7 @@ func Build(cfg *config.Config) (*Group, error) {
 		routeInfo := buildRouteInfo(cfg, routeBalancers)
 		g.plugins = plugin.NewManager()
 		g.plugins.Configure(bindings, routeInfo)
-		slog.Info("plugin bindings configured", "count", len(bindings))
+		slog.Debug("plugin bindings configured", "count", len(bindings))
 	}
 
 	// Build servers (second pass).
@@ -130,7 +131,7 @@ func (g *Group) Reload(cfg *config.Config) error {
 	for name, svc := range cfg.Services {
 		handler, ok := g.handlers[name]
 		if !ok {
-			slog.Warn("new service in config requires restart to take effect",
+			slog.Warn("service added, restart required",
 				"service", name,
 			)
 			continue
@@ -150,7 +151,7 @@ func (g *Group) Reload(cfg *config.Config) error {
 			if ms.name == name && ms.dispatch != nil {
 				routes := buildDispatcherRoutes(name, svc, cfg)
 				ms.dispatch.SwapRoutes(routes)
-				slog.Info("dispatcher routes reloaded", "service", name, "routes", len(routes))
+				slog.Debug("dispatcher routes reloaded", "service", name, "routes", len(routes))
 			}
 		}
 
@@ -174,7 +175,7 @@ func (g *Group) Reload(cfg *config.Config) error {
 
 		swapped++
 
-		slog.Info("service reloaded", "service", name)
+		slog.Debug("service reloaded", "service", name)
 	}
 
 	// Reconfigure plugins.
@@ -196,7 +197,7 @@ func (g *Group) Reload(cfg *config.Config) error {
 	// Warn about removed services.
 	for name := range g.handlers {
 		if _, ok := cfg.Services[name]; !ok {
-			slog.Warn("removed service in config requires restart to take effect",
+			slog.Warn("service removed, restart required",
 				"service", name,
 			)
 		}
@@ -255,7 +256,7 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 		tlsCfg.Certificates = certs
 		srv.TLSConfig = tlsCfg
 
-		slog.Info("loaded TLS certificates",
+		slog.Debug("loaded TLS certificates",
 			"service", name,
 			"count", len(certs),
 		)
@@ -272,7 +273,7 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 				passCount++
 			}
 		}
-		slog.Info("l4 dispatcher enabled",
+		slog.Debug("l4 dispatcher enabled",
 			"service", name,
 			"total_routes", len(dispatchRoutes),
 			"pass_routes", passCount,
@@ -453,7 +454,7 @@ func (g *Group) ListenAndServe(ctx context.Context) error {
 	// Start plugin processes.
 	if g.plugins != nil {
 		if err := g.plugins.Start(ctx); err != nil {
-			slog.Error("plugin start error", "error", err)
+			slog.Error("plugin start failed", "err", err)
 		}
 	}
 
@@ -479,7 +480,7 @@ func (g *Group) ListenAndServe(ctx context.Context) error {
 		g.shutdown()
 		return err
 	case <-ctx.Done():
-		slog.Info("shutdown signal received, draining connections...")
+		slog.Info("shutting down")
 		g.shutdown()
 		return nil
 	}
@@ -521,10 +522,11 @@ func (ms *managedServer) serveWithDispatcher() error {
 	}
 	ms.rawLn = ln // store for shutdown
 
-	slog.Info("starting server with l4 dispatcher",
+	slog.Info("starting server",
 		"service", ms.name,
 		"addr", ms.server.Addr,
 		"tls", ms.server.TLSConfig != nil,
+		"l4", true,
 	)
 
 	// The dispatcher accepts raw TCP, handles pass routes inline,
@@ -563,9 +565,9 @@ func (g *Group) shutdown() {
 			}
 
 			if err := ms.server.Shutdown(ctx); err != nil {
-				slog.Warn("graceful shutdown timed out, forcing close",
+				slog.Warn("shutdown timeout, forcing close",
 					"service", ms.name,
-					"error", err,
+					"err", err,
 				)
 				// Force-close all active HTTP connections to unblock
 				// handlers stuck in upstream RoundTrip calls.
@@ -591,6 +593,22 @@ type routingSnapshot struct {
 	registry *action.Registry
 }
 
+// capturePool reuses ResponseCapture structs to reduce per-request allocations.
+var capturePool = sync.Pool{
+	New: func() any { return &logger.ResponseCapture{} },
+}
+
+func acquireCapture(w http.ResponseWriter) *logger.ResponseCapture {
+	c := capturePool.Get().(*logger.ResponseCapture)
+	c.Reset(w)
+	return c
+}
+
+func releaseCapture(c *logger.ResponseCapture) {
+	c.ResponseWriter = nil
+	capturePool.Put(c)
+}
+
 // swappableHandler wraps an atomic pointer to a routingSnapshot.
 type swappableHandler struct {
 	name    string
@@ -610,11 +628,49 @@ func (h *swappableHandler) Swap(rt *router.Router, registry *action.Registry) {
 }
 
 func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var start time.Time
+	var capture *logger.ResponseCapture
+	accessOn := logger.AccessEnabled()
+	if accessOn {
+		start = time.Now()
+		capture = acquireCapture(w)
+		w = capture
+	}
+
+	// Access log — runs after recovery. Skipped for dropped connections.
+	dropped := false
+	if accessOn {
+		defer func() {
+			if dropped {
+				releaseCapture(capture)
+				return
+			}
+			mr := router.GetMatchResult(r)
+			routeID := ""
+			if mr != nil {
+				routeID = mr.RouteID(h.name)
+			}
+			logger.LogAccess(routeID, logger.AccessEntry{
+				Timestamp: start,
+				Service:   h.name,
+				Method:    r.Method,
+				Path:      r.URL.Path,
+				Status:    capture.Status(),
+				Duration:  float64(time.Since(start).Microseconds()) / 1000.0,
+				BytesOut:  capture.BytesOut(),
+				ClientIP:  logger.ClientIP(r),
+				UserAgent: r.Header.Get("User-Agent"),
+			})
+			releaseCapture(capture)
+		}()
+	}
+
 	defer func() {
 		if v := recover(); v != nil {
 			// http.ErrAbortHandler is a Go internal signal, not a real panic.
 			// Re-panic so the HTTP server handles it silently.
 			if v == http.ErrAbortHandler {
+				dropped = true
 				panic(v)
 			}
 			slog.Error("panic recovered",
@@ -628,7 +684,13 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	snap := h.current.Load()
 
-	r, actionName := snap.router.Match(r)
+	// Fast path: skip MatchResult allocation when nobody needs it.
+	var actionName string
+	if h.plugins == nil && !accessOn {
+		actionName = snap.router.MatchAction(r)
+	} else {
+		r, actionName = snap.router.Match(r)
+	}
 	if actionName == "" {
 		http.NotFound(w, r)
 		return
@@ -638,16 +700,16 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var reqInfo *plugin.RequestInfo
 	if h.plugins != nil {
 		mr := router.GetMatchResult(r)
-		routeID := fmt.Sprintf("%s:%d", h.name, mr.RouteIndex)
+		routeID := mr.RouteID(h.name)
 		reqInfo = buildRequestInfo(r, mr, routeID)
 
 		if h.plugins.HasHook(routeID, plugin.HookOnRequest) {
 			res, err := h.plugins.OnRequest(r.Context(), routeID, reqInfo)
 			if err != nil {
-				slog.Error("plugin on_request error",
+				slog.Error("plugin request hook failed",
 					"service", h.name,
 					"route", routeID,
-					"error", err,
+					"err", err,
 				)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				return
@@ -686,20 +748,13 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	handler := snap.registry.Get(actionName)
 	if handler == nil {
-		slog.Error("action handler not found",
+		slog.Error("action not found",
 			"service", h.name,
 			"action", actionName,
 		)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-
-	slog.Debug("handling request",
-		"service", h.name,
-		"method", r.Method,
-		"path", r.URL.Path,
-		"action", actionName,
-	)
 
 	handler.ServeHTTP(w, r)
 }
@@ -735,7 +790,8 @@ func buildRequestInfo(r *http.Request, mr *router.MatchResult, routeID string) *
 	}
 
 	// Read up to maxPluginBody bytes for the plugin, then restore the body.
-	if r.Body != nil && r.ContentLength != 0 {
+	// Skip for methods that typically carry no meaningful body.
+	if r.Body != nil && r.ContentLength != 0 && hasRequestBody(r.Method) {
 		lr := io.LimitReader(r.Body, maxPluginBody+1)
 		body, err := io.ReadAll(lr)
 		if err == nil && len(body) > 0 {
@@ -750,6 +806,16 @@ func buildRequestInfo(r *http.Request, mr *router.MatchResult, routeID string) *
 	}
 
 	return info
+}
+
+// hasRequestBody returns true for HTTP methods that typically carry a body.
+func hasRequestBody(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodDelete:
+		return false
+	default:
+		return true
+	}
 }
 
 // hookResponseWriter intercepts WriteHeader to call the on_response plugin hook
@@ -783,9 +849,9 @@ func (hw *hookResponseWriter) WriteHeader(statusCode int) {
 		Headers: respHeaders,
 	})
 	if err != nil {
-		slog.Error("plugin on_response error",
+		slog.Error("plugin response hook failed",
 			"route", hw.routeID,
-			"error", err,
+			"err", err,
 		)
 		// Continue with original response on error.
 		hw.ResponseWriter.WriteHeader(statusCode)
@@ -875,7 +941,7 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 					slog.Warn("invalid plugin path",
 						"plugin", pluginRef,
 						"path", pluginPath,
-						"error", err,
+						"err", err,
 					)
 					continue
 				}
@@ -901,10 +967,10 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 
 		absPath, err := filepath.Abs(p.Path)
 		if err != nil {
-			slog.Warn("invalid autostart plugin path",
+			slog.Warn("invalid plugin path",
 				"plugin", name,
 				"path", p.Path,
-				"error", err,
+				"err", err,
 			)
 			continue
 		}

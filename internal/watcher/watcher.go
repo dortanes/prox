@@ -18,9 +18,9 @@ func Watch(ctx context.Context, paths []string, onChange func()) {
 	for _, p := range paths {
 		s, err := snapshot(p)
 		if err != nil {
-			slog.Warn("file watcher: cannot stat file, skipping",
+			slog.Warn("watcher: file not accessible",
 				"path", p,
-				"error", err,
+				"err", err,
 			)
 			continue
 		}
@@ -28,11 +28,11 @@ func Watch(ctx context.Context, paths []string, onChange func()) {
 	}
 
 	if len(snapshots) == 0 {
-		slog.Warn("file watcher: no files to watch, watcher disabled")
+		slog.Warn("watcher: no files to watch")
 		return
 	}
 
-	slog.Info("file watcher started", "files", len(snapshots))
+	slog.Debug("file watcher started", "files", len(snapshots))
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -45,12 +45,12 @@ func Watch(ctx context.Context, paths []string, onChange func()) {
 			for p, prev := range snapshots {
 				cur, err := snapshot(p)
 				if err != nil {
-					slog.Debug("file watcher: stat error", "path", p, "error", err)
+					slog.Debug("watcher: stat failed", "path", p, "err", err)
 					continue
 				}
 
 				if cur != prev {
-					slog.Info("config file changed, triggering reload", "path", p)
+					slog.Info("config changed", "path", p)
 					snapshots[p] = cur
 					onChange()
 					break // one reload per tick is enough

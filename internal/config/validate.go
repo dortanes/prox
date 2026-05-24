@@ -25,6 +25,7 @@ func Validate(cfg *Config) error {
 	v.validateServices()
 	v.validatePluginsRegistry()
 	v.validateActions()
+	v.validateLogging()
 
 	if len(v.issues) > 0 {
 		return &ValidationError{Issues: v.issues}
@@ -348,5 +349,22 @@ func (v *validator) validateBalancer(prefix string, route *Route) {
 				v.addIssue("%s: action upstream must contain {target} placeholder when using a balancer", prefix)
 			}
 		}
+	}
+}
+
+var validLogLevels = map[string]bool{
+	"debug": true,
+	"info":  true,
+	"warn":  true,
+	"error": true,
+}
+
+func (v *validator) validateLogging() {
+	if v.cfg.Logging == nil {
+		return
+	}
+
+	if v.cfg.Logging.Level != "" && !validLogLevels[strings.ToLower(v.cfg.Logging.Level)] {
+		v.addIssue("logging.level: unknown level %q (expected debug, info, warn, or error)", v.cfg.Logging.Level)
 	}
 }

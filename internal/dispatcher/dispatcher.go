@@ -140,7 +140,7 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 
 	if err != nil {
 		slog.Debug("sni peek failed, closing connection",
-			"error", err,
+			"err", err,
 			"remote", conn.RemoteAddr(),
 		)
 		conn.Close()
@@ -240,7 +240,7 @@ func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream str
 	if err != nil {
 		slog.Error("l4 upstream dial failed",
 			"upstream", upstream,
-			"error", err,
+			"err", err,
 			"remote", client.RemoteAddr(),
 		)
 		return
@@ -257,7 +257,7 @@ func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream str
 	if _, err := up.Write(peekedBytes); err != nil {
 		slog.Error("l4 upstream write failed",
 			"upstream", upstream,
-			"error", err,
+			"err", err,
 		)
 		return
 	}
