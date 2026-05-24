@@ -4,7 +4,7 @@
       listen: ":9876",
       routes: [
         {
-          action: { type: "proxy", upstream: "localhost:9877" },
+          action: { type: "proxy", upstream: "127.0.0.1:9877" },
         },
       ],
     },

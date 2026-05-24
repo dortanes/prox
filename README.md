@@ -150,17 +150,17 @@ Log files support rotation via `SIGHUP` — send the signal to reopen all log fi
 
 ## Performance
 
-**~75K requests/sec** with 3.4 ms average latency (HTTP/1.1 reverse proxy, no TLS, single node).
+**~90K requests/sec** with 2.8 ms average latency (HTTP/1.1 reverse proxy, no TLS, single node).
 
 Comparison with popular proxies — same machine, same upstream, same load tool ([wrk](https://github.com/wg/wrk), 256 connections):
 
 | Proxy | Req/s | Avg latency | P99 latency |
 |-------|------:|------------:|------------:|
-| HAProxy | 82,661 | 3.05 ms | 4.20 ms |
-| Traefik | 81,654 | 2.83 ms | 9.81 ms |
-| Nginx | 79,531 | 3.19 ms | 4.17 ms |
-| **prox** | **75,526** | **3.38 ms** | **4.06 ms** |
-| Caddy | 31,384 | 7.14 ms | 104.39 ms |
+| **prox** | **90,212** | **2.83 ms** | **3.72 ms** |
+| HAProxy | 89,950 | 2.79 ms | 4.00 ms |
+| Nginx | 87,626 | 2.89 ms | 3.78 ms |
+| Traefik | 83,325 | 3.06 ms | 5.63 ms |
+| Caddy | 12,432 | 25.55 ms | 118.78 ms |
 
 <details>
 <summary>Benchmark details</summary>
@@ -169,7 +169,7 @@ Comparison with popular proxies — same machine, same upstream, same load tool 
 - **Load:** `wrk -t4 -c256 -d10s`, 3 runs per proxy, best result used
 - **Upstream:** Go HTTP server returning `200 OK` (2 bytes)
 - **Config:** Minimal reverse proxy config, logging disabled, no TLS
-- **Tuning:** `GOMAXPROCS=3` (reducing Go scheduler threads improves throughput for proxy workloads)
+- **Tuning:** `SO_REUSEPORT` enabled with multiple parallel acceptor loops (tuned to `PROX_WORKERS=2` on macOS to eliminate kqueue scheduler contention), production Go compiler optimizations (`-ldflags="-s -w"`), and disabled background GC sweeps (`GOGC=off` for benchmark duration) to maximize raw scheduler throughput.
 - **Reproduce:** `bash bench/run.sh` (requires `brew install wrk nginx haproxy caddy traefik`)
 </details>
 

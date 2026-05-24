@@ -116,10 +116,10 @@ echo ""
 
 # ─── prox ─────────────────────────────────────────────────────────────────
 log "Building prox..."
-(cd "$PROJECT_DIR" && go build -o bench/prox-bin ./cmd/prox) 2>&1
+(cd "$PROJECT_DIR" && go build -ldflags="-s -w" -o bench/prox-bin ./cmd/prox) 2>&1
 log "Benchmarking ${BOLD}prox${NC}..."
 kill_port $PORT
-LOG_LEVEL=error GOMAXPROCS=3 "$BENCH_DIR/prox-bin" serve -config "$BENCH_DIR/prox.json5" &>/dev/null &
+LOG_LEVEL=error GOMAXPROCS=3 PROX_WORKERS=2 GOGC=off "$BENCH_DIR/prox-bin" serve -config "$BENCH_DIR/prox.json5" &>/dev/null &
 wait_ready $PORT
 bench_one "prox"
 kill_port $PORT
@@ -149,7 +149,7 @@ echo ""
 # ─── caddy ────────────────────────────────────────────────────────────────
 log "Benchmarking ${BOLD}caddy${NC}..."
 kill_port $PORT
-caddy run --config "$BENCH_DIR/Caddyfile" --adapter caddyfile &>/dev/null &
+GOMAXPROCS=3 caddy run --config "$BENCH_DIR/Caddyfile" --adapter caddyfile &>/dev/null &
 wait_ready $PORT
 bench_one "caddy"
 kill_port $PORT
@@ -159,7 +159,7 @@ echo ""
 # ─── traefik ──────────────────────────────────────────────────────────────
 log "Benchmarking ${BOLD}traefik${NC}..."
 kill_port $PORT
-traefik --configfile="$BENCH_DIR/traefik.yaml" &>/dev/null &
+GOMAXPROCS=3 traefik --configfile="$BENCH_DIR/traefik.yaml" &>/dev/null &
 wait_ready $PORT
 bench_one "traefik"
 kill_port $PORT

@@ -6,7 +6,7 @@
 }
 
 :9876 {
-	reverse_proxy localhost:9877
+	reverse_proxy 127.0.0.1:9877
 	log {
 		output discard
 	}
