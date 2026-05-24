@@ -101,6 +101,14 @@ p.Run()
 }
 ```
 
+Plugins with `autostart: true` are spawned at proxy startup without requiring route bindings — useful for background routines, health monitors, metrics exporters, and other global tasks:
+
+```json5
+plugins: {
+  routines: { path: "./plugins/routines", autostart: true },
+}
+```
+
 ## Docker
 
 ```yaml

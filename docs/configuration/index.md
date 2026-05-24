@@ -15,7 +15,7 @@ Every config has three sections:
 │              │              │               │                 │
 │  listen addr │  name        │  type: proxy  │  inline text    │
 │  tls on/off  │   └ path     │  type: static │                 │
-│  routes[]    │              │  type: serve  │                 │
+│  routes[]    │   └ autostart│  type: serve  │                 │
 │   └ match    │              │  timeout      │                 │
 │   └ plugins ─│──► ref       │               │                 │
 │   └ action ──│──────────────│──► ref ───────│──► body_ref     │

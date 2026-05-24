@@ -173,13 +173,36 @@ sdk.RejectConn()                      // close TCP connection
 For target discovery, use the push methods (these go over stdin/stdout, no socket needed):
 
 ```go
+// By route ID:
 p.SetTargets(routeID, []string{"10.0.1.1:8080", "10.0.1.2:8080"})
+
+// By action name — updates all routes using the given action:
+p.SetActionTargets("dynamic_proxy", []string{"10.0.1.1:8080", "10.0.1.2:8080"})
+
+// Wildcard — updates all routes with balancers:
+p.SetTargets("*", []string{"10.0.1.1:8080"})
+```
+
+### Grouped Targets
+
+```go
 p.SetGroupedTargets(routeID, map[string][]string{
+    "de": {"de-1:8080", "de-2:8080"},
+    "us": {"us-1:8080"},
+})
+p.SetActionGroupedTargets("dynamic_proxy", map[string][]string{
     "de": {"de-1:8080", "de-2:8080"},
     "us": {"us-1:8080"},
 })
 ```
 
-### Grouped Targets
-
 With domain pattern `*.**`, a request to `de.example.com` captures `de` → the balancer picks from the `"de"` group only. Each group gets its own sub-balancer with the route's strategy.
+
+### Methods
+
+| Method | Description |
+|--------|-------------|
+| `SetTargets(routeID, targets)` | Push flat targets for a specific route (or `"*"` for all) |
+| `SetGroupedTargets(routeID, groups)` | Push grouped targets for a specific route (or `"*"` for all) |
+| `SetActionTargets(action, targets)` | Push flat targets for all routes using the given action |
+| `SetActionGroupedTargets(action, groups)` | Push grouped targets for all routes using the given action |

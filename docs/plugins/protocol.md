@@ -15,7 +15,7 @@ Plugins use two communication channels:
 
 ### Prox → Plugin: `configure`
 
-Sent once after the plugin starts, and again on config reload.
+Sent once per bound route after the plugin starts, and again on config reload. For autostart plugins with no route bindings, a single `configure` is sent with an empty `route_id` and no `match`.
 
 ```json
 {
@@ -45,9 +45,9 @@ Available hook names: `on_request`, `on_response`, `on_connect`.
 
 ### Plugin → Prox: `set_targets`
 
-Push new targets to the route's balancer. Sent whenever the target pool changes.
+Push new targets to route balancers. Sent whenever the target pool changes.
 
-**Flat mode:**
+**By route ID:**
 
 ```json
 {
@@ -59,13 +59,37 @@ Push new targets to the route's balancer. Sent whenever the target pool changes.
 }
 ```
 
-**Grouped mode:**
+**By action name** — updates all routes using the given action:
 
 ```json
 {
   "method": "set_targets",
   "params": {
-    "route_id": "gateway:0",
+    "action": "dynamic_proxy",
+    "targets": ["10.0.1.1:3505", "10.0.1.2:3505"]
+  }
+}
+```
+
+**Wildcard** — updates all routes with balancers:
+
+```json
+{
+  "method": "set_targets",
+  "params": {
+    "route_id": "*",
+    "targets": ["10.0.1.1:3505", "10.0.1.2:3505"]
+  }
+}
+```
+
+**Grouped mode** — works with any targeting method above:
+
+```json
+{
+  "method": "set_targets",
+  "params": {
+    "action": "dynamic_proxy",
     "groups": {
       "de": ["de-node1.internal:8080", "de-node2.internal:8080"],
       "us": ["us-node1.internal:8080"]
@@ -74,9 +98,12 @@ Push new targets to the route's balancer. Sent whenever the target pool changes.
 }
 ```
 
+- `route_id` — target a specific route, or `"*"` for all routes
+- `action` — target all routes using this action name
 - `targets` — flat replacement list (not a diff). Previous targets are discarded.
 - `groups` — keyed replacement map. Each key gets its own sub-balancer.
 - Use `targets` OR `groups`, not both in the same message.
+- Use `route_id` OR `action`, not both.
 
 ## Unix Socket — Request-Response Hooks
 

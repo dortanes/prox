@@ -46,6 +46,19 @@ Define your plugins in the global `plugins` block, and attach them to any route 
 
 - `plugins` — list of plugin aliases (or literal paths)
 - `plugin_timeout` — per-request timeout for plugin hook calls (default: 5s)
+- `autostart` — start plugin at proxy startup without route bindings (default: false)
+
+### Autostart Plugins
+
+Plugins that perform global background work (routines, health monitors, metrics exporters) don't need route bindings. Set `autostart: true` to spawn them at proxy startup:
+
+```json5
+plugins: {
+  routines: { path: "./plugins/routines", autostart: true },
+}
+```
+
+Autostart plugins receive a single `configure` message with an empty route ID. In the SDK, check `route.ID == ""` to distinguish global init from route-specific configuration.
 
 ### Rules
 
@@ -56,6 +69,7 @@ Define your plugins in the global `plugins` block, and attach them to any route 
 - Pre-compiled binaries are used as-is (must be executable)
 - A `balancer` is required only when using target discovery (not for auth-only plugins)
 - Multiple plugins can be attached to a single route (sequential execution, short-circuit on deny)
+- Plugins with `autostart: true` are spawned at startup without route bindings — useful for background routines, metrics, health monitors
 
 ### Auto-compilation
 
@@ -87,7 +101,7 @@ If a plugin compilation fails and a `go.mod` file is present in its directory, p
 
 ```
 1. prox starts → spawns plugin process
-2. prox sends "configure" for each bound route
+2. prox sends "configure" for each bound route (or empty route for autostart plugins)
 3. plugin optionally sends "ready" with socket path and hooks
 4. prox connects to the Unix socket (connection pool)
 5. plugin pushes "set_targets" whenever data changes
