@@ -33,9 +33,11 @@ go build -o prox ./cmd/prox
 - **Plugin middleware** — auth, response modification, L4 gating via Go SDK
 - **Dynamic targets** — plugin-based service discovery with grouped targeting
 - **Hot reload** — zero-downtime config changes with file watcher
+- **Logging** — colorized console, leveled output, file-based access/error logs
 - **WebSocket** — transparent proxy with session pinning
 - **TLS** — multi-cert SNI, directory-based cert loading
 - **HTTP/2** — full-duplex h2c upstream support
+- **Fully concurrent** — goroutine-per-connection across all CPU cores
 
 ## Config
 
@@ -108,6 +110,70 @@ plugins: {
   routines: { path: "./plugins/routines", autostart: true },
 }
 ```
+
+## Logging
+
+Colorized console output with structured key-value fields. Log level can be set via environment variable, CLI flag, or config file:
+
+```bash
+# Environment variable (highest priority)
+LOG_LEVEL=debug prox serve
+
+# CLI flag
+prox serve -log-level debug
+```
+
+File-based logging with global and per-route access logs:
+
+```json5
+{
+  logging: {
+    level: "info",                           // overridden by LOG_LEVEL env
+    access_log: "/var/log/prox/access.log",  // global access log (JSON lines)
+    error_log: "/var/log/prox/error.log",    // warn/error level messages
+  },
+  services: {
+    web: {
+      routes: [
+        {
+          match: { path: "/api/*" },
+          access_log: "/var/log/prox/api.log",  // per-route access log
+          action: { type: "proxy", upstream: "localhost:3000" },
+        },
+      ],
+    },
+  },
+}
+```
+
+Log files support rotation via `SIGHUP` — send the signal to reopen all log files after rotating them with tools like `logrotate`.
+
+## Performance
+
+**~75K requests/sec** with 3.4 ms average latency (HTTP/1.1 reverse proxy, no TLS, single node).
+
+Comparison with popular proxies — same machine, same upstream, same load tool ([wrk](https://github.com/wg/wrk), 256 connections):
+
+| Proxy | Req/s | Avg latency | P99 latency |
+|-------|------:|------------:|------------:|
+| HAProxy | 82,661 | 3.05 ms | 4.20 ms |
+| Traefik | 81,654 | 2.83 ms | 9.81 ms |
+| Nginx | 79,531 | 3.19 ms | 4.17 ms |
+| **prox** | **75,526** | **3.38 ms** | **4.06 ms** |
+| Caddy | 31,384 | 7.14 ms | 104.39 ms |
+
+<details>
+<summary>Benchmark details</summary>
+
+- **Machine:** Apple M4 Pro (12-core), 24 GB RAM, macOS
+- **Load:** `wrk -t4 -c256 -d10s`, 3 runs per proxy, best result used
+- **Upstream:** Go HTTP server returning `200 OK` (2 bytes)
+- **Config:** Minimal reverse proxy config, logging disabled, no TLS
+- **Tuning:** `GOMAXPROCS=3` (reducing Go scheduler threads improves throughput for proxy workloads)
+- **Reproduce:** `bash bench/run.sh` (requires `brew install wrk nginx haproxy caddy traefik`)
+</details>
+
+> Results depend on hardware, OS, and workload. Run `bench/run.sh` on your own machine for accurate numbers.
 
 ## Docker
 
