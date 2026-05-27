@@ -150,6 +150,7 @@ sdk.Drop()                            // silently close connection
 
 sdk.WithHeader(key, value)            // inject header (on allow: into request, on deny: into response)
 sdk.WithSpeedLimit(down, up)          // set per-connection bandwidth cap (Mbps)
+sdk.WithSpeedLimit(down, up, groupKey)// set grouped bandwidth cap (all connections with same key share the budget)
 sdk.WithCleanQuery()                  // remove query string from upstream request
 sdk.WithRewritePath(path)             // override upstream request path
 ```
@@ -215,6 +216,12 @@ p.SetActionSpeedLimit("proxy", sdk.SpeedLimit{DownloadMbps: 100})
 p.SetSpeedLimit("*", sdk.SpeedLimit{DownloadMbps: 25})
 ```
 
+When `GroupKey` is set, the push updates the rate for active group buckets with that key:
+
+```go
+p.SetSpeedLimit(routeID, sdk.SpeedLimit{DownloadMbps: 50, GroupKey: userID})
+```
+
 When multiple limits apply (config, push, response), the most restrictive value wins.
 
 ### Methods
@@ -225,5 +232,5 @@ When multiple limits apply (config, push, response), the most restrictive value 
 | `SetGroupedTargets(routeID, groups)` | Push grouped targets for a specific route (or `"*"` for all) |
 | `SetActionTargets(action, targets)` | Push flat targets for all routes using the given action |
 | `SetActionGroupedTargets(action, groups)` | Push grouped targets for all routes using the given action |
-| `SetSpeedLimit(routeID, limit)` | Push per-connection speed limit for a specific route (or `"*"` for all) |
-| `SetActionSpeedLimit(action, limit)` | Push per-connection speed limit for all routes using the given action |
+| `SetSpeedLimit(routeID, limit)` | Push speed limit for a specific route (or `"*"` for all) |
+| `SetActionSpeedLimit(action, limit)` | Push speed limit for all routes using the given action |

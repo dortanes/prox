@@ -105,6 +105,29 @@ Push new targets to route balancers. Sent whenever the target pool changes.
 - Use `targets` OR `groups`, not both in the same message.
 - Use `route_id` OR `action`, not both.
 
+### Plugin → Prox: `set_speed`
+
+Push speed limits to route connections. Supports the same targeting as `set_targets`.
+
+```json
+{
+  "method": "set_speed",
+  "params": {
+    "route_id": "gateway:0",
+    "download_mbps": 50,
+    "upload_mbps": 10
+  }
+}
+```
+
+| Field           | Type   | Description                                             |
+|-----------------|--------|---------------------------------------------------------|
+| `route_id`      | string | Target route, or `"*"` for all routes                   |
+| `action`        | string | Target all routes using this action                     |
+| `download_mbps` | number | Download bandwidth cap in Mbps                          |
+| `upload_mbps`   | number | Upload bandwidth cap in Mbps                            |
+| `group_key`     | string | When set, updates the rate for active group buckets with this key |
+
 ## Unix Socket — Request-Response Hooks
 
 The socket uses **length-prefixed msgpack frames**:
@@ -159,6 +182,14 @@ Envelope {
 | SpeedLimit | `sp`      | object            |
 | CleanQuery | `cq`      | bool              |
 | RewritePath| `rp`      | string            |
+
+**SpeedLimit object (`sp`):**
+
+| Field        | msgpack key | Type   | Description                                        |
+|--------------|-------------|--------|----------------------------------------------------|
+| DownloadMbps | `dl`        | float64| Download bandwidth cap in Mbps                     |
+| UploadMbps   | `ul`        | float64| Upload bandwidth cap in Mbps                       |
+| GroupKey     | `gk`        | string | Aggregate key — connections with the same key share a single bandwidth pool |
 
 ### `on_response`
 

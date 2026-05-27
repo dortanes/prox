@@ -169,6 +169,11 @@ p.SetSpeedLimit("web:0", sdk.SpeedLimit{DownloadMbps: 50})
 p.OnRequest(func(req *sdk.Request) *sdk.Response {
     return sdk.Allow(sdk.WithSpeedLimit(10, 5)) // 10 Mbps down, 5 Mbps up
 })
+
+// Grouped limit — all connections with the same key share a single budget.
+p.OnRequest(func(req *sdk.Request) *sdk.Response {
+    return sdk.Allow(sdk.WithSpeedLimit(50, 50, userID))
+})
 ```
 
 When multiple limits apply (config + plugin push + plugin response), the **most restrictive** value wins per direction. Speed limiting works with all proxy modes including WebSocket and gRPC.

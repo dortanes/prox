@@ -81,6 +81,24 @@ p.OnRequest(func(req *sdk.Request) *sdk.Response {
 })
 ```
 
+### Group Speed Limiting
+
+By default, plugin speed limits are per-connection — each connection gets an independent bandwidth budget. With `GroupKey`, all connections sharing the same key share a single bandwidth pool.
+
+This solves the multi-connection bypass problem: clients that open multiple parallel connections per session effectively multiply their bandwidth cap. With grouping, the total throughput across all connections stays within the configured limit.
+
+```go
+p.OnRequest(func(req *sdk.Request) *sdk.Response {
+    userID := authenticate(req)
+    // All connections from the same user share one 50 Mbps budget.
+    return sdk.Allow(sdk.WithSpeedLimit(50, 50, userID))
+})
+```
+
+- When `GroupKey` is empty — per-connection limiting (backward compatible)
+- When `GroupKey` is set — all connections with the same key share a single bandwidth pool
+- Group buckets are cleaned up automatically when all connections in the group close
+
 ## Limit Resolution
 
 When multiple sources set speed limits (config, plugin push, plugin response), the **most restrictive** (lowest non-zero) value wins per direction.
@@ -90,6 +108,7 @@ When multiple sources set speed limits (config, plugin push, plugin response), t
 | Config `speed`  | Route-level       | Startup / reload |
 | Plugin push     | Route-level       | Any time         |
 | Plugin response | Single connection | Per-request      |
+| Plugin response (grouped) | All connections with same GroupKey | Per-request |
 
 !!! note
     A zero value from any source means "no limit from this source" — it does not override limits set by other sources.
