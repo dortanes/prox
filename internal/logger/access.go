@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -189,12 +190,14 @@ func formatDuration(ms float64) string {
 // --- ResponseCapture ---
 
 // ResponseCapture wraps http.ResponseWriter to record the status code and bytes written.
-// It is used by the access log middleware.
+// It is used by the access log middleware. When the connection is hijacked (WebSocket),
+// Status() returns 101 to reflect the protocol switch.
 type ResponseCapture struct {
 	http.ResponseWriter
 	status   int
 	bytesOut int64
 	written  bool
+	hijacked bool
 }
 
 // NewResponseCapture wraps a ResponseWriter for access log capturing.
@@ -208,6 +211,7 @@ func (rc *ResponseCapture) Reset(w http.ResponseWriter) {
 	rc.status = http.StatusOK
 	rc.bytesOut = 0
 	rc.written = false
+	rc.hijacked = false
 }
 
 func (rc *ResponseCapture) WriteHeader(code int) {
@@ -228,6 +232,16 @@ func (rc *ResponseCapture) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Hijack implements http.Hijacker. It marks the connection as hijacked
+// so Status() reports 101 (Switching Protocols) in the access log.
+func (rc *ResponseCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, buf, err := http.NewResponseController(rc.ResponseWriter).Hijack()
+	if err == nil {
+		rc.hijacked = true
+	}
+	return conn, buf, err
+}
+
 // Unwrap returns the original ResponseWriter. This allows http.ResponseController
 // to discover interfaces like http.Flusher and http.Hijacker on the inner writer.
 func (rc *ResponseCapture) Unwrap() http.ResponseWriter {
@@ -235,7 +249,13 @@ func (rc *ResponseCapture) Unwrap() http.ResponseWriter {
 }
 
 // Status returns the recorded HTTP status code.
-func (rc *ResponseCapture) Status() int { return rc.status }
+// For hijacked connections (WebSocket), returns 101 Switching Protocols.
+func (rc *ResponseCapture) Status() int {
+	if rc.hijacked {
+		return http.StatusSwitchingProtocols
+	}
+	return rc.status
+}
 
 // BytesOut returns the total bytes written to the response body.
 func (rc *ResponseCapture) BytesOut() int64 { return rc.bytesOut }
