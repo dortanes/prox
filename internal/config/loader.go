@@ -150,6 +150,7 @@ type rawService struct {
 	TLSCert string          `json:"tls_cert,omitempty"`
 	TLSKey  string          `json:"tls_key,omitempty"`
 	Config  *ServerConfig   `json:"config,omitempty"`
+	Plugins []string        `json:"plugins,omitempty"`
 	Routes  []rawRouteEntry `json:"routes"`
 }
 
@@ -225,6 +226,7 @@ func (lc *loadContext) loadRootFile(path string) (*Config, error) {
 				TLSCert: entry.Inline.TLSCert,
 				TLSKey:  entry.Inline.TLSKey,
 				Config:  entry.Inline.Config,
+				Plugins: entry.Inline.Plugins,
 				Routes:  routes,
 			}
 			continue

@@ -71,6 +71,8 @@ func (v *validator) validateService(name string, svc *Service) {
 		// server.loadCertificates handle the error at runtime.
 	}
 
+	v.validatePluginNames(fmt.Sprintf("service %q", name), svc.Plugins)
+
 	if len(svc.Routes) == 0 {
 		v.addIssue("service %q: at least one route is required", name)
 		return
@@ -119,7 +121,7 @@ func (v *validator) validateRoute(svcName string, idx int, route *Route) {
 	}
 
 	if len(route.Plugins) > 0 {
-		v.validatePlugins(prefix, route)
+		v.validatePluginNames(prefix, route.Plugins)
 	}
 
 	if route.Balancer != nil {
@@ -216,6 +218,8 @@ func (v *validator) validateActions() {
 }
 
 func (v *validator) validateAction(name string, action *Action) {
+	v.validatePluginNames(fmt.Sprintf("action %q", name), action.Plugins)
+
 	switch action.Type {
 	case ActionTypeProxy:
 		v.validateProxyAction(name, action)
@@ -282,8 +286,9 @@ func (v *validator) validatePassAction(name string, action *Action) {
 	}
 }
 
-func (v *validator) validatePlugins(prefix string, route *Route) {
-	for i, p := range route.Plugins {
+// validatePluginNames checks that plugin references are non-empty.
+func (v *validator) validatePluginNames(prefix string, plugins []string) {
+	for i, p := range plugins {
 		if p == "" {
 			v.addIssue("%s: plugins[%d] is empty", prefix, i)
 		}
@@ -311,6 +316,30 @@ func (v *validator) hasAutostartPlugins() bool {
 	return false
 }
 
+// routeHasPlugins checks whether the route has plugins from any level
+// (route-level, service-level, or action-level).
+func (v *validator) routeHasPlugins(route *Route) bool {
+	if len(route.Plugins) > 0 {
+		return true
+	}
+	// Check parent service and resolved action.
+	for _, svc := range v.cfg.Services {
+		if len(svc.Plugins) > 0 {
+			for _, r := range svc.Routes {
+				if r == route {
+					return true
+				}
+			}
+		}
+	}
+	if route.Action.Name != "" {
+		if act, ok := v.cfg.Actions[route.Action.Name]; ok && len(act.Plugins) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (v *validator) validateBalancer(prefix string, route *Route) {
 	bal := route.Balancer
 
@@ -325,8 +354,8 @@ func (v *validator) validateBalancer(prefix string, route *Route) {
 	}
 
 	// Empty targets are valid when plugins will populate them
-	// (either route-bound plugins or global autostart plugins).
-	if len(bal.Targets) == 0 && len(route.Plugins) == 0 && !v.hasAutostartPlugins() {
+	// (either route-bound, service-level, action-level, or global autostart plugins).
+	if len(bal.Targets) == 0 && !v.routeHasPlugins(route) && !v.hasAutostartPlugins() {
 		v.addIssue("%s: balancer.targets must have at least one entry (or use plugins)", prefix)
 	}
 

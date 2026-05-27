@@ -9,6 +9,7 @@
 
   // Global plugins registry.
   plugins: {
+    auth: { path: "./plugins/auth" },
     resolver: { path: "./plugins/resolver" },
 
     // Autostart plugins are spawned at startup without route bindings.
@@ -20,6 +21,8 @@
   services: {
     web: {
       listen: ":8080",
+      // Service-level plugins apply to all routes in this service.
+      plugins: ["auth"],
       routes: [
         // Health check — inline action, no need for a separate entry.
         {
@@ -108,10 +111,10 @@
         },
 
         // Plugin-managed targets with per-connection speed limit.
+        // "resolver" plugin is declared on the action, not each route.
         // Each connection gets its own 50 Mbps download / 10 Mbps upload cap.
         {
           match: { domain: "*.**", path: "/ws" },
-          plugins: ["resolver"],
           balancer: { type: "leastconn" },
           speed: { download_mbps: 50, upload_mbps: 10 },
           set: { port: "8080" },
@@ -119,7 +122,6 @@
         },
         {
           match: { domain: "*.**", path: "/grpc" },
-          plugins: ["resolver"],
           balancer: { type: "leastconn" },
           set: { port: "8081" },
           action: "dynamic_proxy",
@@ -152,9 +154,11 @@
       root: "./public",
     },
     // Shared dynamic proxy with fallback.
+    // Action-level plugins apply to all routes using this action.
     dynamic_proxy: {
       type: "proxy",
       upstream: "{target}:{port}",
+      plugins: ["resolver"],
       fallback: "default_backend",
     },
     default_backend: {

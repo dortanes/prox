@@ -19,52 +19,68 @@ Plugins are external executables that extend prox at runtime. They can dynamical
 
 ## Configuration
 
-Define your plugins in the global `plugins` block, and attach them to any route by referencing their alias in the `plugins` array:
+Define your plugins in the global `plugins` block. Attach them at three levels:
+
+### Route-Level
+
+Plugins apply only to the specific route:
 
 ```json5
-{
-  plugins: {
-    auth: { path: "./plugins/auth.go" },
-  },
-  services: {
-    web: {
-      listen: ":443",
-      routes: [
-        {
-          match: { domain: "*.example.com", path: "/api/*" },
-          plugins: ["auth"],      // Reference plugin by alias
-          plugin_timeout: "2s",   // optional (default: 5s)
-          action: { type: "proxy", upstream: "localhost:3000" },
-        }
-      ]
-    }
+routes: [
+  {
+    match: { path: "/api/*" },
+    plugins: ["auth"],
+    action: "api",
+  }
+]
+```
+
+### Service-Level
+
+Plugins apply to **all routes** in the service:
+
+```json5
+services: {
+  web: {
+    listen: ":443",
+    plugins: ["auth"],
+    routes: [
+      { match: { path: "/api/*" }, action: "api" },
+      { match: { path: "/ws" }, action: "proxy" },  // also gets "auth"
+    ]
   }
 }
 ```
 
-### Fields
+### Action-Level
 
-- `plugins` — list of plugin aliases (or literal paths)
-- `plugin_timeout` — per-request timeout for plugin hook calls (default: 5s)
-- `autostart` — start plugin at proxy startup without route bindings (default: false)
-
-### Autostart Plugins
-
-Plugins that perform global background work (routines, health monitors, metrics exporters) don't need route bindings. Set `autostart: true` to spawn them at proxy startup:
+Plugins apply to **all routes** that reference the action:
 
 ```json5
-plugins: {
-  routines: { path: "./plugins/routines", autostart: true },
+actions: {
+  api: {
+    type: "proxy",
+    upstream: "localhost:3000",
+    plugins: ["ratelimit"],
+  }
 }
 ```
 
-Autostart plugins receive a single `configure` message with an empty route ID. In the SDK, check `route.ID == ""` to distinguish global init from route-specific configuration.
+### Merge Order
+
+Plugins from all levels are merged per route: **service → action → route**. Duplicates are removed (first occurrence wins). The effective list determines execution order — service-level plugins run first, then action-level, then route-level.
+
+### Fields
+
+- `plugins` — list of plugin aliases (or literal paths) — available on route, service, and action
+- `plugin_timeout` — per-request timeout for plugin hook calls (default: 5s) — route-level only
+- `autostart` — start plugin at proxy startup without route bindings (default: false)
 
 ### Rules
 
 - Define `plugins` globally to map easy-to-read aliases to absolute or relative paths
 - Plugin paths are resolved relative to the config file's directory where they are defined
-- You can still define a raw path string (e.g. `"./plugins/auth.go"`) directly in the route `plugins` array
+- You can still define a raw path string (e.g. `"./plugins/auth.go"`) directly in a `plugins` array
 - **`.go` source files are compiled automatically** — no manual build step needed
 - Pre-compiled binaries are used as-is (must be executable)
 - A `balancer` is required only when using target discovery (not for auth-only plugins)

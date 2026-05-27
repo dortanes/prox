@@ -101,21 +101,31 @@ p.Run()
 {
   plugins: {
     auth: { path: "./plugins/auth.go" },
+    ratelimit: { path: "./plugins/ratelimit" },
   },
   services: {
     web: {
+      plugins: ["auth"],              // applies to all routes in this service
       routes: [
         {
-          match: { domain: "*.example.com", path: "/api/*" },
-          plugins: ["auth"],
-          plugin_timeout: "2s",
-          action: { type: "proxy", upstream: "localhost:3000" },
+          match: { path: "/api/*" },
+          plugins: ["ratelimit"],     // route-specific (in addition to service-level)
+          action: "api",
         }
       ]
     }
-  }
+  },
+  actions: {
+    api: {
+      type: "proxy",
+      upstream: "localhost:3000",
+      plugins: ["ratelimit"],         // applies to all routes using this action
+    },
+  },
 }
 ```
+
+Plugins are merged from all levels: **service → action → route** (deduplicated, first occurrence wins).
 
 Plugins with `autostart: true` are spawned at proxy startup without requiring route bindings — useful for background routines, health monitors, metrics exporters, and other global tasks:
 

@@ -76,7 +76,7 @@ func Build(cfg *config.Config) (*Group, error) {
 		routers[name] = rt
 
 		for i, route := range svc.Routes {
-			if route.Balancer != nil && (len(route.Plugins) > 0 || autostart) {
+			if route.Balancer != nil && (routeHasPlugins(svc, route, cfg) || autostart) {
 				inner := rt.RouteBalancer(i)
 				if inner != nil {
 					grouped := bal.NewGrouped(string(route.Balancer.Type), inner)
@@ -164,7 +164,7 @@ func (g *Group) Reload(cfg *config.Config) error {
 
 		// Wrap balancers in Grouped for plugin-managed or autostart-targeted routes.
 		for i, route := range svc.Routes {
-			if route.Balancer != nil && (len(route.Plugins) > 0 || hasAutostartPlugins(cfg)) {
+			if route.Balancer != nil && (routeHasPlugins(svc, route, cfg) || hasAutostartPlugins(cfg)) {
 				inner := rt.RouteBalancer(i)
 				if inner != nil {
 					grouped := bal.NewGrouped(string(route.Balancer.Type), inner)
@@ -1029,7 +1029,8 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 
 	for name, svc := range cfg.Services {
 		for i, route := range svc.Routes {
-			if len(route.Plugins) == 0 {
+			merged := mergePlugins(svc, route, cfg)
+			if len(merged) == 0 {
 				continue
 			}
 
@@ -1044,7 +1045,7 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 				}
 			}
 
-			for _, pluginRef := range route.Plugins {
+			for _, pluginRef := range merged {
 				pluginPath := pluginRef
 				if p, ok := cfg.Plugins[pluginRef]; ok {
 					pluginPath = p.Path
@@ -1099,6 +1100,62 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 	}
 
 	return bindings
+}
+
+// mergePlugins combines plugins from service, action, and route levels.
+// Order: service → action → route. Duplicates are removed (first occurrence wins).
+func mergePlugins(svc *config.Service, route *config.Route, cfg *config.Config) []string {
+	total := len(svc.Plugins) + len(route.Plugins)
+
+	// Resolve action-level plugins.
+	var actionPlugins []string
+	if route.Action.Name != "" {
+		if act, ok := cfg.Actions[route.Action.Name]; ok {
+			actionPlugins = act.Plugins
+			total += len(actionPlugins)
+		}
+	}
+
+	if total == 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool, total)
+	merged := make([]string, 0, total)
+
+	for _, p := range svc.Plugins {
+		if !seen[p] {
+			seen[p] = true
+			merged = append(merged, p)
+		}
+	}
+	for _, p := range actionPlugins {
+		if !seen[p] {
+			seen[p] = true
+			merged = append(merged, p)
+		}
+	}
+	for _, p := range route.Plugins {
+		if !seen[p] {
+			seen[p] = true
+			merged = append(merged, p)
+		}
+	}
+
+	return merged
+}
+
+// routeHasPlugins checks if a route has any plugins from service, action, or route level.
+func routeHasPlugins(svc *config.Service, route *config.Route, cfg *config.Config) bool {
+	if len(svc.Plugins) > 0 || len(route.Plugins) > 0 {
+		return true
+	}
+	if route.Action.Name != "" {
+		if act, ok := cfg.Actions[route.Action.Name]; ok && len(act.Plugins) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // buildRouteInfo creates a map of all routes with balancers and their action names.

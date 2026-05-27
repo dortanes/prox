@@ -548,6 +548,104 @@ func TestConfig_TransportSettings(t *testing.T) {
 	}
 }
 
+// --- Plugin Inheritance Config ---
+
+func TestConfig_ServicePluginsParsed(t *testing.T) {
+	cfg := writeConfig(t, `{
+		plugins: {
+			auth: { path: "./auth" },
+		},
+		services: {
+			web: {
+				listen: ":8080",
+				plugins: ["auth"],
+				routes: [
+					{ action: { type: "proxy", upstream: "localhost:3000" } }
+				]
+			}
+		}
+	}`)
+
+	result, err := config.LoadFile(cfg)
+	if err != nil {
+		t.Fatalf("config load: %v", err)
+	}
+
+	svc := result.Config.Services["web"]
+	if len(svc.Plugins) != 1 || svc.Plugins[0] != "auth" {
+		t.Errorf("service plugins: expected [auth], got %v", svc.Plugins)
+	}
+}
+
+func TestConfig_ActionPluginsParsed(t *testing.T) {
+	cfg := writeConfig(t, `{
+		plugins: {
+			ratelimit: { path: "./ratelimit" },
+		},
+		services: {
+			web: {
+				listen: ":8080",
+				routes: [
+					{ action: "api" }
+				]
+			}
+		},
+		actions: {
+			api: { type: "proxy", upstream: "localhost:3000", plugins: ["ratelimit"] }
+		}
+	}`)
+
+	result, err := config.LoadFile(cfg)
+	if err != nil {
+		t.Fatalf("config load: %v", err)
+	}
+
+	act := result.Config.Actions["api"]
+	if len(act.Plugins) != 1 || act.Plugins[0] != "ratelimit" {
+		t.Errorf("action plugins: expected [ratelimit], got %v", act.Plugins)
+	}
+}
+
+func TestConfig_ServicePluginsValidationEmpty(t *testing.T) {
+	cfg := writeConfig(t, `{
+		services: {
+			web: {
+				listen: ":8080",
+				plugins: [""],
+				routes: [
+					{ action: { type: "proxy", upstream: "localhost:3000" } }
+				]
+			}
+		}
+	}`)
+
+	_, err := config.LoadFile(cfg)
+	if err == nil {
+		t.Error("expected error for empty service plugin name, got nil")
+	}
+}
+
+func TestConfig_ActionPluginsValidationEmpty(t *testing.T) {
+	cfg := writeConfig(t, `{
+		services: {
+			web: {
+				listen: ":8080",
+				routes: [
+					{ action: "api" }
+				]
+			}
+		},
+		actions: {
+			api: { type: "proxy", upstream: "localhost:3000", plugins: [""] }
+		}
+	}`)
+
+	_, err := config.LoadFile(cfg)
+	if err == nil {
+		t.Error("expected error for empty action plugin name, got nil")
+	}
+}
+
 // --- Speed Limiting Config ---
 
 func TestConfig_SpeedParsed(t *testing.T) {

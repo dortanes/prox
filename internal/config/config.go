@@ -36,12 +36,14 @@ type Plugin struct {
 }
 
 // Service defines a single listener with its routing rules.
+// Plugins declared at the service level apply to all routes in the service.
 type Service struct {
 	Listen  string        `json:"listen"`
 	TLS     bool          `json:"tls"`
 	TLSCert string        `json:"tls_cert,omitempty"`
 	TLSKey  string        `json:"tls_key,omitempty"`
 	Config  *ServerConfig `json:"config,omitempty"`
+	Plugins []string      `json:"plugins,omitempty"`
 	Routes  []*Route      `json:"routes"`
 }
 
@@ -151,8 +153,10 @@ const (
 )
 
 // Action defines what happens when a route matches.
+// Plugins declared at the action level apply to all routes using this action.
 type Action struct {
-	Type ActionType `json:"type"`
+	Type    ActionType `json:"type"`
+	Plugins []string   `json:"plugins,omitempty"`
 
 	// Proxy-specific fields.
 	Upstream string   `json:"upstream,omitempty"`
