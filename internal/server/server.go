@@ -694,6 +694,14 @@ type routingSnapshot struct {
 	registry *action.Registry
 }
 
+// throttleBufPool reuses 32KB byte slices for throttled ReadFrom copies.
+var throttleBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 32*1024)
+		return &b
+	},
+}
+
 // capturePool reuses ResponseCapture structs to reduce per-request allocations.
 var capturePool = sync.Pool{
 	New: func() any { return &logger.ResponseCapture{} },
@@ -1330,6 +1338,10 @@ func (h *swappableHandler) applySpeedLimit(
 }
 
 // throttledResponseWriter wraps http.ResponseWriter to enforce download speed limits.
+//
+// This wrapper intentionally does NOT implement Unwrap(). Exposing the inner
+// ResponseWriter would let io.Copy discover the underlying http.response's
+// ReadFrom method and bypass the throttled Write entirely.
 type throttledResponseWriter struct {
 	http.ResponseWriter
 	tw *throttle.Writer
@@ -1339,17 +1351,38 @@ func (w *throttledResponseWriter) Write(b []byte) (int, error) {
 	return w.tw.Write(b)
 }
 
+// ReadFrom implements io.ReaderFrom so that io.Copy routes through the
+// throttled Write instead of bypassing it via the inner ResponseWriter.
+func (w *throttledResponseWriter) ReadFrom(src io.Reader) (int64, error) {
+	bufp := throttleBufPool.Get().(*[]byte)
+	buf := *bufp
+	defer throttleBufPool.Put(bufp)
+
+	var total int64
+	for {
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			nw, writeErr := w.tw.Write(buf[:n])
+			total += int64(nw)
+			if writeErr != nil {
+				return total, writeErr
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return total, nil
+			}
+			return total, readErr
+		}
+	}
+}
+
 func (w *throttledResponseWriter) Flush() {
 	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 func (w *throttledResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return http.NewResponseController(w.ResponseWriter).Hijack()
-}
-
-// Unwrap returns the underlying ResponseWriter for middleware chaining.
-func (w *throttledResponseWriter) Unwrap() http.ResponseWriter {
-	return w.ResponseWriter
 }
 
 // minPositive returns the smaller of two positive values.
