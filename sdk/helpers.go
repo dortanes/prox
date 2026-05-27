@@ -24,6 +24,15 @@ func Deny(status int, body string, opts ...Option) *Response {
 	return r
 }
 
+// Fallback creates a response that tells the proxy to route the request to the configured fallback action.
+func Fallback(opts ...Option) *Response {
+	r := &Response{Allow: false, Fallback: true}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
+}
+
 // Drop silently closes the connection without sending any HTTP response.
 func Drop() *Response {
 	return &Response{Drop: true}

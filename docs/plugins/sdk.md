@@ -145,6 +145,7 @@ p.OnConnect(func(conn *sdk.ConnRequest) *sdk.ConnResponse {
 ```go
 sdk.Allow(opts...)                    // approve request
 sdk.Deny(status, body, opts...)       // reject with HTTP response
+sdk.Fallback(opts...)                 // route request to the fallback action
 sdk.Drop()                            // silently close connection
 
 sdk.WithHeader(key, value)            // inject header (on allow: into request, on deny: into response)

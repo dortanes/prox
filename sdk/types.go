@@ -89,6 +89,7 @@ func indexByte(s string, c byte) int {
 type Response struct {
 	Allow      bool              `msgpack:"ok" json:"allow"`
 	Drop       bool              `msgpack:"dr,omitempty" json:"drop,omitempty"`
+	Fallback   bool              `msgpack:"fb,omitempty" json:"fallback,omitempty"`
 	Status     int               `msgpack:"s,omitempty" json:"status,omitempty"`
 	Body       string            `msgpack:"b,omitempty" json:"body,omitempty"`
 	Headers    map[string]string `msgpack:"h,omitempty" json:"headers,omitempty"`

@@ -113,6 +113,7 @@ type RequestInfo struct {
 type AuthorizeResult struct {
 	Allow      bool              `msgpack:"ok"`
 	Drop       bool              `msgpack:"dr,omitempty"`
+	Fallback   bool              `msgpack:"fb,omitempty"`
 	Status     int               `msgpack:"s,omitempty"`
 	Body       string            `msgpack:"b,omitempty"`
 	Headers    map[string]string `msgpack:"h,omitempty"`
