@@ -841,6 +841,9 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if res.CleanQuery {
 				r.URL.RawQuery = ""
 			}
+			if res.RewritePath != "" {
+				r.URL.Path = res.RewritePath
+			}
 		}
 
 		// Wrap response writer for on_response hook.
