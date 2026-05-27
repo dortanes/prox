@@ -803,6 +803,7 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Plugin on_request gate.
 	var reqInfo *plugin.RequestInfo
 	var pluginSpeedLimit *plugin.SpeedLimit
+	useFallback := false
 	if h.plugins != nil {
 		mr := router.GetMatchResult(r)
 		routeID := mr.RouteID(h.name)
@@ -822,7 +823,9 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if res.Drop {
 				panic(http.ErrAbortHandler)
 			}
-			if !res.Allow {
+			if res.Fallback {
+				useFallback = true
+			} else if !res.Allow {
 				status := res.Status
 				if status == 0 {
 					status = http.StatusForbidden
@@ -863,14 +866,27 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w, r = h.applySpeedLimit(w, r, mr, pluginSpeedLimit)
 	}
 
-	handler := snap.registry.Get(actionName)
-	if handler == nil {
-		slog.Error("action not found",
-			"service", h.name,
-			"action", actionName,
-		)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
+	var handler http.Handler
+	if useFallback {
+		handler = snap.registry.GetFallback(actionName)
+		if handler == nil {
+			slog.Warn("plugin requested fallback, but no fallback defined",
+				"service", h.name,
+				"action", actionName,
+			)
+			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+			return
+		}
+	} else {
+		handler = snap.registry.Get(actionName)
+		if handler == nil {
+			slog.Error("action not found",
+				"service", h.name,
+				"action", actionName,
+			)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	handler.ServeHTTP(w, r)
