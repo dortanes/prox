@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -546,3 +547,176 @@ func TestConfig_TransportSettings(t *testing.T) {
 		t.Error("disable_compression: expected false")
 	}
 }
+
+// --- Speed Limiting Config ---
+
+func TestConfig_SpeedParsed(t *testing.T) {
+	cfg := writeConfig(t, `{
+		services: {
+			web: {
+				listen: ":8080",
+				routes: [
+					{
+						speed: { download_mbps: 50, upload_mbps: 10, shared: true },
+						action: { type: "proxy", upstream: "localhost:3000" }
+					}
+				]
+			}
+		}
+	}`)
+
+	result, err := config.LoadFile(cfg)
+	if err != nil {
+		t.Fatalf("config load: %v", err)
+	}
+
+	route := result.Config.Services["web"].Routes[0]
+	if route.Speed == nil {
+		t.Fatal("speed config is nil")
+	}
+	if route.Speed.DownloadMbps != 50 {
+		t.Errorf("download_mbps: expected 50, got %v", route.Speed.DownloadMbps)
+	}
+	if route.Speed.UploadMbps != 10 {
+		t.Errorf("upload_mbps: expected 10, got %v", route.Speed.UploadMbps)
+	}
+	if !route.Speed.Shared {
+		t.Error("shared: expected true")
+	}
+}
+
+func TestConfig_SpeedFractional(t *testing.T) {
+	cfg := writeConfig(t, `{
+		services: {
+			web: {
+				listen: ":8080",
+				routes: [
+					{
+						speed: { download_mbps: 0.5 },
+						action: { type: "proxy", upstream: "localhost:3000" }
+					}
+				]
+			}
+		}
+	}`)
+
+	result, err := config.LoadFile(cfg)
+	if err != nil {
+		t.Fatalf("config load: %v", err)
+	}
+
+	route := result.Config.Services["web"].Routes[0]
+	if route.Speed == nil {
+		t.Fatal("speed config is nil")
+	}
+	if route.Speed.DownloadMbps != 0.5 {
+		t.Errorf("download_mbps: expected 0.5, got %v", route.Speed.DownloadMbps)
+	}
+}
+
+func TestConfig_SpeedValidationNegative(t *testing.T) {
+	cfg := writeConfig(t, `{
+		services: {
+			web: {
+				listen: ":8080",
+				routes: [
+					{
+						speed: { download_mbps: -10 },
+						action: { type: "proxy", upstream: "localhost:3000" }
+					}
+				]
+			}
+		}
+	}`)
+
+	_, err := config.LoadFile(cfg)
+	if err == nil {
+		t.Error("expected error for negative download_mbps, got nil")
+	}
+}
+
+func TestConfig_SpeedValidationZeroBoth(t *testing.T) {
+	cfg := writeConfig(t, `{
+		services: {
+			web: {
+				listen: ":8080",
+				routes: [
+					{
+						speed: { shared: true },
+						action: { type: "proxy", upstream: "localhost:3000" }
+					}
+				]
+			}
+		}
+	}`)
+
+	_, err := config.LoadFile(cfg)
+	if err == nil {
+		t.Error("expected error when both mbps are 0, got nil")
+	}
+}
+
+// --- Speed Limiting E2E ---
+
+func TestProxy_SpeedLimit(t *testing.T) {
+	// Upstream that responds with a known payload size.
+	payloadSize := 256 * 1024 // 256 KB
+	upPort := freePort(t)
+	payload := make([]byte, payloadSize)
+	for i := range payload {
+		payload[i] = 'x'
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", payloadSize))
+		w.Write(payload)
+	})
+	srv := &http.Server{
+		Addr:    fmt.Sprintf("127.0.0.1:%d", upPort),
+		Handler: mux,
+	}
+	go func() { _ = srv.ListenAndServe() }()
+	t.Cleanup(func() { srv.Close() })
+	waitForPort(t, upPort, 3*time.Second)
+
+	proxyPort := freePort(t)
+
+	// 0.5 Mbps = 62,500 bytes/sec.
+	// 256 KB at 62,500 B/s takes ~4s, minus ~1s burst = ~3s effective.
+	cfg := writeConfig(t, fmt.Sprintf(`{
+		services: {
+			web: {
+				listen: "127.0.0.1:%d",
+				routes: [
+					{
+						speed: { download_mbps: 0.5 },
+						action: { type: "proxy", upstream: "127.0.0.1:%d" }
+					}
+				]
+			}
+		}
+	}`, proxyPort, upPort))
+
+	stop := startProx(t, cfg, proxyPort)
+	defer stop()
+
+	start := time.Now()
+	status, body := httpGet(t, fmt.Sprintf("http://127.0.0.1:%d/", proxyPort))
+	elapsed := time.Since(start)
+
+	if status != 200 {
+		t.Fatalf("expected 200, got %d", status)
+	}
+	if len(body) != payloadSize {
+		t.Fatalf("expected %d bytes, got %d", payloadSize, len(body))
+	}
+
+	// Account for burst (first ~62KB is instant), so effective throttled
+	// payload is ~194KB at 62,500 B/s = ~3.1s. Use 2s as safe lower bound.
+	minExpected := 2 * time.Second
+	if elapsed < minExpected {
+		t.Errorf("speed limit not enforced: transferred %d bytes in %v (expected >= %v)", payloadSize, elapsed, minExpected)
+	}
+}
+
