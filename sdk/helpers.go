@@ -40,6 +40,17 @@ func WithHeader(key, value string) Option {
 	}
 }
 
+// WithSpeedLimit sets per-connection bandwidth caps in Mbps.
+// Zero values mean unlimited for that direction.
+func WithSpeedLimit(downloadMbps, uploadMbps float64) Option {
+	return func(r *Response) {
+		r.SpeedLimit = &SpeedLimit{
+			DownloadMbps: downloadMbps,
+			UploadMbps:   uploadMbps,
+		}
+	}
+}
+
 // AcceptConn creates an L4 connection approval.
 func AcceptConn() *ConnResponse {
 	return &ConnResponse{Allow: true}

@@ -107,6 +107,31 @@ func (p *Plugin) SetActionGroupedTargets(action string, groups map[string][]stri
 	})
 }
 
+// SetSpeedLimit pushes a per-connection speed limit for the given route.
+// Use "*" as routeID to target all routes.
+func (p *Plugin) SetSpeedLimit(routeID string, limit SpeedLimit) {
+	p.send(pushMsg{
+		Method: "set_speed",
+		Params: pushParams{
+			RouteID:      routeID,
+			DownloadMbps: limit.DownloadMbps,
+			UploadMbps:   limit.UploadMbps,
+		},
+	})
+}
+
+// SetActionSpeedLimit pushes a per-connection speed limit for all routes using the given action.
+func (p *Plugin) SetActionSpeedLimit(action string, limit SpeedLimit) {
+	p.send(pushMsg{
+		Method: "set_speed",
+		Params: pushParams{
+			Action:       action,
+			DownloadMbps: limit.DownloadMbps,
+			UploadMbps:   limit.UploadMbps,
+		},
+	})
+}
+
 // Run starts the plugin event loop. It blocks until stdin is closed.
 // Call this after registering all handlers.
 func (p *Plugin) Run() {
@@ -232,10 +257,12 @@ type pushMsg struct {
 }
 
 type pushParams struct {
-	RouteID string              `json:"route_id,omitempty"`
-	Action  string              `json:"action,omitempty"`
-	Targets []string            `json:"targets,omitempty"`
-	Groups  map[string][]string `json:"groups,omitempty"`
+	RouteID      string              `json:"route_id,omitempty"`
+	Action       string              `json:"action,omitempty"`
+	Targets      []string            `json:"targets,omitempty"`
+	Groups       map[string][]string `json:"groups,omitempty"`
+	DownloadMbps float64             `json:"download_mbps,omitempty"`
+	UploadMbps   float64             `json:"upload_mbps,omitempty"`
 }
 
 func init() {

@@ -87,11 +87,12 @@ func indexByte(s string, c byte) int {
 
 // Response is the plugin's verdict for an on_request hook.
 type Response struct {
-	Allow   bool              `msgpack:"ok" json:"allow"`
-	Drop    bool              `msgpack:"dr,omitempty" json:"drop,omitempty"`
-	Status  int               `msgpack:"s,omitempty" json:"status,omitempty"`
-	Body    string            `msgpack:"b,omitempty" json:"body,omitempty"`
-	Headers map[string]string `msgpack:"h,omitempty" json:"headers,omitempty"`
+	Allow      bool              `msgpack:"ok" json:"allow"`
+	Drop       bool              `msgpack:"dr,omitempty" json:"drop,omitempty"`
+	Status     int               `msgpack:"s,omitempty" json:"status,omitempty"`
+	Body       string            `msgpack:"b,omitempty" json:"body,omitempty"`
+	Headers    map[string]string `msgpack:"h,omitempty" json:"headers,omitempty"`
+	SpeedLimit *SpeedLimit       `msgpack:"sp,omitempty" json:"speed_limit,omitempty"`
 }
 
 // UpstreamResponse carries upstream response context for on_response hooks.
@@ -119,6 +120,12 @@ type ConnRequest struct {
 // ConnResponse is the plugin's verdict for an on_connect hook.
 type ConnResponse struct {
 	Allow bool `msgpack:"ok" json:"allow"`
+}
+
+// SpeedLimit defines per-connection bandwidth caps in Mbps.
+type SpeedLimit struct {
+	DownloadMbps float64 `msgpack:"dl,omitempty" json:"download_mbps,omitempty"`
+	UploadMbps   float64 `msgpack:"ul,omitempty" json:"upload_mbps,omitempty"`
 }
 
 // HookType identifies the hook being invoked over the socket.

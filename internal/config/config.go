@@ -87,6 +87,15 @@ type ServerConfig struct {
 	MaxConnections int `json:"max_connections,omitempty"` // Maximum concurrent connections (0 = unlimited)
 }
 
+// SpeedConfig controls per-route bandwidth throttling.
+// When Shared is true, all connections on the route share the bandwidth budget.
+// When Shared is false (default), each connection gets its own independent limit.
+type SpeedConfig struct {
+	DownloadMbps float64 `json:"download_mbps,omitempty"` // upstream→client limit in Mbps (0 = unlimited)
+	UploadMbps   float64 `json:"upload_mbps,omitempty"`   // client→upstream limit in Mbps (0 = unlimited)
+	Shared       bool    `json:"shared,omitempty"`         // share bandwidth across all connections
+}
+
 // Route binds a request matcher to an action — either by name or inline.
 // An optional Balancer distributes requests across multiple targets.
 // Plugins can dynamically manage balancer targets at runtime.
@@ -96,6 +105,7 @@ type Route struct {
 	Plugins       []string          `json:"plugins,omitempty"`
 	PluginTimeout Duration          `json:"plugin_timeout,omitempty"` // per-request timeout for plugin hooks (default: 5s)
 	Balancer      *BalancerConfig   `json:"balancer,omitempty"`
+	Speed         *SpeedConfig      `json:"speed,omitempty"`
 	Set           map[string]string `json:"set,omitempty"`
 	Action        ActionRef         `json:"action"`
 	AccessLog     string            `json:"access_log,omitempty"` // per-route access log file path

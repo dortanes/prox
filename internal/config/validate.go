@@ -125,6 +125,10 @@ func (v *validator) validateRoute(svcName string, idx int, route *Route) {
 	if route.Balancer != nil {
 		v.validateBalancer(prefix, route)
 	}
+
+	if route.Speed != nil {
+		v.validateSpeed(prefix, route.Speed)
+	}
 }
 
 // validatePath ensures the path pattern is well-formed.
@@ -349,6 +353,18 @@ func (v *validator) validateBalancer(prefix string, route *Route) {
 				v.addIssue("%s: action upstream must contain {target} placeholder when using a balancer", prefix)
 			}
 		}
+	}
+}
+
+func (v *validator) validateSpeed(prefix string, speed *SpeedConfig) {
+	if speed.DownloadMbps < 0 {
+		v.addIssue("%s: speed.download_mbps must be >= 0", prefix)
+	}
+	if speed.UploadMbps < 0 {
+		v.addIssue("%s: speed.upload_mbps must be >= 0", prefix)
+	}
+	if speed.DownloadMbps == 0 && speed.UploadMbps == 0 {
+		v.addIssue("%s: speed requires at least one of download_mbps or upload_mbps > 0", prefix)
 	}
 }
 

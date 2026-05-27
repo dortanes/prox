@@ -17,6 +17,7 @@ import (
 const (
 	MethodConfigure  = "configure"
 	MethodSetTargets = "set_targets"
+	MethodSetSpeed   = "set_speed"
 	MethodReady      = "ready"
 )
 
@@ -76,6 +77,9 @@ type PushParams struct {
 	// Ready-specific fields (only when Method == "ready").
 	Socket string   `json:"socket,omitempty"`
 	Hooks  []string `json:"hooks,omitempty"`
+
+	DownloadMbps float64 `json:"download_mbps,omitempty"`
+	UploadMbps   float64 `json:"upload_mbps,omitempty"`
 }
 
 // --- Socket protocol types (msgpack) ---
@@ -107,11 +111,12 @@ type RequestInfo struct {
 
 // AuthorizeResult is the plugin's verdict for an on_request hook.
 type AuthorizeResult struct {
-	Allow   bool              `msgpack:"ok"`
-	Drop    bool              `msgpack:"dr,omitempty"`
-	Status  int               `msgpack:"s,omitempty"`
-	Body    string            `msgpack:"b,omitempty"`
-	Headers map[string]string `msgpack:"h,omitempty"`
+	Allow      bool              `msgpack:"ok"`
+	Drop       bool              `msgpack:"dr,omitempty"`
+	Status     int               `msgpack:"s,omitempty"`
+	Body       string            `msgpack:"b,omitempty"`
+	Headers    map[string]string `msgpack:"h,omitempty"`
+	SpeedLimit *SpeedLimit       `msgpack:"sp,omitempty"`
 }
 
 // UpstreamResponseInfo carries upstream response context for on_response hooks.
@@ -145,6 +150,12 @@ type ConnInfo struct {
 // ConnResult is the plugin's verdict for an on_connect hook.
 type ConnResult struct {
 	Allow bool `msgpack:"ok"`
+}
+
+// SpeedLimit holds per-connection bandwidth caps from plugin responses.
+type SpeedLimit struct {
+	DownloadMbps float64 `msgpack:"dl,omitempty"`
+	UploadMbps   float64 `msgpack:"ul,omitempty"`
 }
 
 // envelopeBufPool reuses buffers for MarshalEnvelope to reduce allocations.
