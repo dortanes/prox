@@ -26,7 +26,9 @@ func NewBucket(bytesPerSec int64) *Bucket {
 	if bytesPerSec <= 0 {
 		return nil
 	}
-	burst := bytesPerSec
+	// Burst = 2x max write chunk. Small enough to avoid initial-burst bypass
+	// at high rates, large enough for smooth throughput at low rates.
+	burst := int64(2 * maxChunk)
 	if burst < 64*1024 {
 		burst = 64 * 1024
 	}
