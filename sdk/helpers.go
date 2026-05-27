@@ -51,6 +51,13 @@ func WithSpeedLimit(downloadMbps, uploadMbps float64) Option {
 	}
 }
 
+// WithCleanQuery removes the query string from the proxied request URL.
+func WithCleanQuery() Option {
+	return func(r *Response) {
+		r.CleanQuery = true
+	}
+}
+
 // AcceptConn creates an L4 connection approval.
 func AcceptConn() *ConnResponse {
 	return &ConnResponse{Allow: true}

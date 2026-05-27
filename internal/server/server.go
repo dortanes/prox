@@ -838,6 +838,9 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				r.Header.Set(k, v)
 			}
 			pluginSpeedLimit = res.SpeedLimit
+			if res.CleanQuery {
+				r.URL.RawQuery = ""
+			}
 		}
 
 		// Wrap response writer for on_response hook.

@@ -93,6 +93,7 @@ type Response struct {
 	Body       string            `msgpack:"b,omitempty" json:"body,omitempty"`
 	Headers    map[string]string `msgpack:"h,omitempty" json:"headers,omitempty"`
 	SpeedLimit *SpeedLimit       `msgpack:"sp,omitempty" json:"speed_limit,omitempty"`
+	CleanQuery bool              `msgpack:"cq,omitempty" json:"clean_query,omitempty"`
 }
 
 // UpstreamResponse carries upstream response context for on_response hooks.

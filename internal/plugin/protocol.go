@@ -117,6 +117,7 @@ type AuthorizeResult struct {
 	Body       string            `msgpack:"b,omitempty"`
 	Headers    map[string]string `msgpack:"h,omitempty"`
 	SpeedLimit *SpeedLimit       `msgpack:"sp,omitempty"`
+	CleanQuery bool              `msgpack:"cq,omitempty"`
 }
 
 // UpstreamResponseInfo carries upstream response context for on_response hooks.
