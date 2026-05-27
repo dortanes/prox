@@ -58,6 +58,13 @@ func WithCleanQuery() Option {
 	}
 }
 
+// WithRewritePath changes the upstream request path (e.g. for removing identifiers).
+func WithRewritePath(path string) Option {
+	return func(r *Response) {
+		r.RewritePath = path
+	}
+}
+
 // AcceptConn creates an L4 connection approval.
 func AcceptConn() *ConnResponse {
 	return &ConnResponse{Allow: true}
