@@ -152,6 +152,7 @@ Envelope {
 |---------|-------------|-------------------|
 | Allow   | `ok`        | bool              |
 | Drop    | `dr`        | bool              |
+| Fallback| `fb`        | bool              |
 | Status  | `s`         | int               |
 | Body    | `b`         | string            |
 | Headers | `h`         | map[string]string |
@@ -185,11 +186,13 @@ ResponsePair {
 
 **Request payload:**
 
-| Field      | msgpack key | Type   |
-|------------|-------------|--------|
-| RouteID    | `r`         | string |
-| Domain     | `d`         | string |
-| RemoteAddr | `a`         | string |
+| Field       | msgpack key | Type   |
+|-------------|-------------|--------|
+| RouteID     | `r`         | string |
+| Domain      | `d`         | string |
+| RemoteAddr  | `a`         | string |
+| MatchDomain | `md`        | string |
+| MatchGlob   | `mg`        | string |
 
 **Response payload:**
 
