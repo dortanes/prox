@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1012,6 +1011,11 @@ func (hw *hookResponseWriter) Write(b []byte) (int, error) {
 	return hw.ResponseWriter.Write(b)
 }
 
+// Unwrap returns the underlying ResponseWriter for middleware chaining.
+func (hw *hookResponseWriter) Unwrap() http.ResponseWriter {
+	return hw.ResponseWriter
+}
+
 // buildRouteHints maps action names to their route paths (for prefix stripping).
 func buildRouteHints(cfg *config.Config) *action.RouteHints {
 	hints := &action.RouteHints{
@@ -1335,16 +1339,11 @@ func (w *throttledResponseWriter) Write(b []byte) (int, error) {
 }
 
 func (w *throttledResponseWriter) Flush() {
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 func (w *throttledResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	if hj, ok := w.ResponseWriter.(http.Hijacker); ok {
-		return hj.Hijack()
-	}
-	return nil, nil, errors.New("underlying ResponseWriter does not implement http.Hijacker")
+	return http.NewResponseController(w.ResponseWriter).Hijack()
 }
 
 // Unwrap returns the underlying ResponseWriter for middleware chaining.

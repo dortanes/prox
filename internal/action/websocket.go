@@ -90,17 +90,13 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 	}
 
 	// Hijack the client connection.
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		slog.Error("websocket hijack not supported")
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	client, clientBuf, err := hj.Hijack()
+	rc := http.NewResponseController(w)
+	client, clientBuf, err := rc.Hijack()
 	if err != nil {
 		slog.Error("websocket hijack failed",
 			"err", err,
 		)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 	defer client.Close()
