@@ -11,7 +11,8 @@ import (
 
 // Registry maps action names to their http.Handler implementations.
 type Registry struct {
-	handlers map[string]http.Handler
+	handlers  map[string]http.Handler
+	fallbacks map[string]http.Handler
 }
 
 // RouteHints maps action names to route paths for prefix stripping.
@@ -23,6 +24,7 @@ type RouteHints struct {
 // svcCfg is optional service-level configuration for transport tuning.
 func Build(actions map[string]*config.Action, resolver *resource.Resolver, hints *RouteHints, svcCfg *config.ServerConfig) (*Registry, error) {
 	handlers := make(map[string]http.Handler, len(actions))
+	fallbacks := make(map[string]http.Handler)
 
 	for name, act := range actions {
 		routePath := ""
@@ -46,17 +48,23 @@ func Build(actions map[string]*config.Action, resolver *resource.Resolver, hints
 		if !ok {
 			return nil, fmt.Errorf("action %q: fallback %q not found", name, act.Fallback)
 		}
+		fallbacks[name] = fb
 		if p, ok := handlers[name].(*Proxy); ok {
 			p.SetFallback(fb)
 		}
 	}
 
-	return &Registry{handlers: handlers}, nil
+	return &Registry{handlers: handlers, fallbacks: fallbacks}, nil
 }
 
 // Get returns the handler for a named action.
 func (reg *Registry) Get(name string) http.Handler {
 	return reg.handlers[name]
+}
+
+// GetFallback returns the fallback handler for a named action, or nil if none is configured.
+func (reg *Registry) GetFallback(name string) http.Handler {
+	return reg.fallbacks[name]
 }
 
 func buildHandler(act *config.Action, resolver *resource.Resolver, routePath string, svcCfg *config.ServerConfig) (http.Handler, error) {
