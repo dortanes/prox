@@ -107,7 +107,7 @@ func (p *Plugin) SetActionGroupedTargets(action string, groups map[string][]stri
 	})
 }
 
-// SetSpeedLimit pushes a per-connection speed limit for the given route.
+// SetSpeedLimit pushes a speed limit for the given route.
 // Use "*" as routeID to target all routes.
 func (p *Plugin) SetSpeedLimit(routeID string, limit SpeedLimit) {
 	p.send(pushMsg{
@@ -116,11 +116,12 @@ func (p *Plugin) SetSpeedLimit(routeID string, limit SpeedLimit) {
 			RouteID:      routeID,
 			DownloadMbps: limit.DownloadMbps,
 			UploadMbps:   limit.UploadMbps,
+			GroupKey:     limit.GroupKey,
 		},
 	})
 }
 
-// SetActionSpeedLimit pushes a per-connection speed limit for all routes using the given action.
+// SetActionSpeedLimit pushes a speed limit for all routes using the given action.
 func (p *Plugin) SetActionSpeedLimit(action string, limit SpeedLimit) {
 	p.send(pushMsg{
 		Method: "set_speed",
@@ -128,6 +129,7 @@ func (p *Plugin) SetActionSpeedLimit(action string, limit SpeedLimit) {
 			Action:       action,
 			DownloadMbps: limit.DownloadMbps,
 			UploadMbps:   limit.UploadMbps,
+			GroupKey:     limit.GroupKey,
 		},
 	})
 }
@@ -263,6 +265,7 @@ type pushParams struct {
 	Groups       map[string][]string `json:"groups,omitempty"`
 	DownloadMbps float64             `json:"download_mbps,omitempty"`
 	UploadMbps   float64             `json:"upload_mbps,omitempty"`
+	GroupKey     string              `json:"group_key,omitempty"`
 }
 
 func init() {

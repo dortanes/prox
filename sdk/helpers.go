@@ -49,14 +49,20 @@ func WithHeader(key, value string) Option {
 	}
 }
 
-// WithSpeedLimit sets per-connection bandwidth caps in Mbps.
+// WithSpeedLimit sets bandwidth caps in Mbps.
 // Zero values mean unlimited for that direction.
-func WithSpeedLimit(downloadMbps, uploadMbps float64) Option {
+// An optional groupKey aggregates bandwidth across all connections sharing
+// the same key (e.g. a user ID) instead of limiting each connection independently.
+func WithSpeedLimit(downloadMbps, uploadMbps float64, groupKey ...string) Option {
 	return func(r *Response) {
-		r.SpeedLimit = &SpeedLimit{
+		sl := &SpeedLimit{
 			DownloadMbps: downloadMbps,
 			UploadMbps:   uploadMbps,
 		}
+		if len(groupKey) > 0 {
+			sl.GroupKey = groupKey[0]
+		}
+		r.SpeedLimit = sl
 	}
 }
 

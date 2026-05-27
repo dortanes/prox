@@ -80,6 +80,7 @@ type PushParams struct {
 
 	DownloadMbps float64 `json:"download_mbps,omitempty"`
 	UploadMbps   float64 `json:"upload_mbps,omitempty"`
+	GroupKey     string  `json:"group_key,omitempty"`
 }
 
 // --- Socket protocol types (msgpack) ---
@@ -155,10 +156,12 @@ type ConnResult struct {
 	Allow bool `msgpack:"ok"`
 }
 
-// SpeedLimit holds per-connection bandwidth caps from plugin responses.
+// SpeedLimit holds bandwidth caps from plugin responses.
+// When GroupKey is set, all connections with the same key share a single budget.
 type SpeedLimit struct {
 	DownloadMbps float64 `msgpack:"dl,omitempty"`
 	UploadMbps   float64 `msgpack:"ul,omitempty"`
+	GroupKey     string  `msgpack:"gk,omitempty"`
 }
 
 // envelopeBufPool reuses buffers for MarshalEnvelope to reduce allocations.

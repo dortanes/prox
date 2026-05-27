@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dortanes/prox/internal/balancer"
+	"github.com/dortanes/prox/internal/throttle"
 )
 
 const (
@@ -56,14 +57,15 @@ type speedIndex struct {
 // It also provides the hook call API (OnRequest, OnResponse, OnConnect)
 // for the HTTP handler and L4 dispatcher.
 type Manager struct {
-	mu        sync.Mutex
-	processes map[string]*managed // keyed by absolute plugin path
-	bindings  []*Binding
-	routes    map[string]*RouteInfo // all routes with balancers (routeID → info)
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	index     atomic.Pointer[hookIndex]  // lock-free hot-path lookup
-	speeds    atomic.Pointer[speedIndex] // lock-free speed limit lookup
+	mu           sync.Mutex
+	processes    map[string]*managed // keyed by absolute plugin path
+	bindings     []*Binding
+	routes       map[string]*RouteInfo // all routes with balancers (routeID → info)
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	index        atomic.Pointer[hookIndex]  // lock-free hot-path lookup
+	speeds       atomic.Pointer[speedIndex] // lock-free speed limit lookup
+	groupBuckets *throttle.GroupRegistry    // shared group speed buckets
 }
 
 // managed wraps a plugin process with restart state and hook caller.
@@ -78,8 +80,14 @@ type managed struct {
 // NewManager creates a plugin manager. Call Start() to spawn processes.
 func NewManager() *Manager {
 	return &Manager{
-		processes: make(map[string]*managed),
+		processes:    make(map[string]*managed),
+		groupBuckets: throttle.NewGroupRegistry(),
 	}
+}
+
+// GroupBuckets returns the shared group speed bucket registry.
+func (m *Manager) GroupBuckets() *throttle.GroupRegistry {
+	return m.groupBuckets
 }
 
 // Configure sets the current route-to-plugin bindings and global route info.
@@ -315,6 +323,10 @@ func (m *Manager) OnRequest(ctx context.Context, routeID string, req *RequestInf
 				if merged.SpeedLimit.UploadMbps == 0 || result.SpeedLimit.UploadMbps < merged.SpeedLimit.UploadMbps {
 					merged.SpeedLimit.UploadMbps = result.SpeedLimit.UploadMbps
 				}
+			}
+			// First non-empty group key wins.
+			if merged.SpeedLimit.GroupKey == "" && result.SpeedLimit.GroupKey != "" {
+				merged.SpeedLimit.GroupKey = result.SpeedLimit.GroupKey
 			}
 		}
 		if result.CleanQuery {
@@ -736,6 +748,11 @@ func (m *Manager) handleSetSpeed(mg *managed, push Push) {
 	}
 
 	m.speeds.Store(&speedIndex{entries: entries})
+
+	// Update rates for active group buckets if group key is specified.
+	if push.Params.GroupKey != "" {
+		m.groupBuckets.UpdateRate(push.Params.GroupKey, downloadBps, uploadBps)
+	}
 }
 
 // mbpsToBytes converts megabits per second to bytes per second.

@@ -125,10 +125,13 @@ type ConnResponse struct {
 	Allow bool `msgpack:"ok" json:"allow"`
 }
 
-// SpeedLimit defines per-connection bandwidth caps in Mbps.
+// SpeedLimit defines bandwidth caps in Mbps.
+// When GroupKey is set, all connections sharing the same key share a single
+// bandwidth budget instead of each getting independent per-connection limits.
 type SpeedLimit struct {
 	DownloadMbps float64 `msgpack:"dl,omitempty" json:"download_mbps,omitempty"`
 	UploadMbps   float64 `msgpack:"ul,omitempty" json:"upload_mbps,omitempty"`
+	GroupKey     string  `msgpack:"gk,omitempty" json:"group_key,omitempty"`
 }
 
 // HookType identifies the hook being invoked over the socket.
