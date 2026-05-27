@@ -149,6 +149,8 @@ sdk.Drop()                            // silently close connection
 
 sdk.WithHeader(key, value)            // inject header (on allow: into request, on deny: into response)
 sdk.WithSpeedLimit(down, up)          // set per-connection bandwidth cap (Mbps)
+sdk.WithCleanQuery()                  // remove query string from upstream request
+sdk.WithRewritePath(path)             // override upstream request path
 ```
 
 ### Response Modifications

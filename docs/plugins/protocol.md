@@ -155,6 +155,9 @@ Envelope {
 | Status  | `s`         | int               |
 | Body    | `b`         | string            |
 | Headers | `h`         | map[string]string |
+| SpeedLimit | `sp`      | object            |
+| CleanQuery | `cq`      | bool              |
+| RewritePath| `rp`      | string            |
 
 ### `on_response`
 
