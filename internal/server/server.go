@@ -845,6 +845,7 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if res.RewritePath != "" {
 				r.URL.Path = res.RewritePath
+				r.URL.RawPath = ""
 			}
 		}
 

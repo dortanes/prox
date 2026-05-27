@@ -320,6 +320,9 @@ func (m *Manager) OnRequest(ctx context.Context, routeID string, req *RequestInf
 		if result.CleanQuery {
 			merged.CleanQuery = true
 		}
+		if result.RewritePath != "" {
+			merged.RewritePath = result.RewritePath
+		}
 	}
 
 	return merged, nil
