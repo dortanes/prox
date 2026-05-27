@@ -212,17 +212,17 @@ Log files support rotation via `SIGHUP` — send the signal to reopen all log fi
 
 ## Performance
 
-**~90K requests/sec** with 2.8 ms average latency (HTTP/1.1 reverse proxy, no TLS, single node).
+**~88K requests/sec** with 2.8 ms average latency (HTTP/1.1 reverse proxy, no TLS, single node).
 
 Comparison with popular proxies — same machine, same upstream, same load tool ([wrk](https://github.com/wg/wrk), 256 connections):
 
 | Proxy | Req/s | Avg latency | P99 latency |
 |-------|------:|------------:|------------:|
-| HAProxy | 91,644 | 2.73 ms | 4.08 ms |
-| **prox** | **90,032** | **2.82 ms** | **3.85 ms** |
-| Nginx | 89,001 | 2.84 ms | 3.71 ms |
-| Traefik | 82,885 | 3.07 ms | 5.78 ms |
-| Caddy | 8,220 | 38.73 ms | 167.05 ms |
+| HAProxy | 90,080 | 2.78 ms | 4.12 ms |
+| **prox** | **88,643** | **2.87 ms** | **3.96 ms** |
+| Nginx | 87,768 | 2.90 ms | 3.74 ms |
+| Traefik | 82,737 | 3.08 ms | 5.84 ms |
+| Caddy | 12,335 | 4.84 ms | 18.11 ms |
 
 <details>
 <summary>Benchmark details</summary>
