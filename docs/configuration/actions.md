@@ -100,9 +100,9 @@ WebSocket connections are detected and handled automatically — no configuratio
 1. Dials the upstream directly via TCP
 2. Forwards the full HTTP upgrade handshake (including all configured `headers`)
 3. Establishes a bidirectional tunnel after the `101 Switching Protocols` response
-4. Relays frames transparently until either side closes
+4. Relays raw bytes transparently until either side closes
 
-This works with any WebSocket library or protocol (RFC 6455). The `timeout` setting applies to the initial upstream dial.
+This works with any WebSocket library or protocol (RFC 6455). The proxy does not interpret WebSocket frames — raw bytes are relayed transparently. The `timeout` setting applies to the initial upstream dial.
 
 ```json5
 // WebSocket-capable proxy — no extra config needed.
@@ -117,6 +117,9 @@ This works with any WebSocket library or protocol (RFC 6455). The `timeout` sett
 ```
 
 If the upstream rejects the upgrade (e.g. returns 403), the rejection response is forwarded to the client as-is.
+
+!!! note
+    On TLS services, HTTP/2 is enabled by default. If you need WebSocket on a TLS service, set [`h2: false`](index.md#h2--http2-on-tls-listeners) to force HTTP/1.1 — Go's HTTP/2 strips the `Connection` and `Upgrade` headers required for WebSocket detection.
 
 ## `static` — Static Response
 

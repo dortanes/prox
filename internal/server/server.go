@@ -262,6 +262,17 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 		tlsCfg.Certificates = certs
 		srv.TLSConfig = tlsCfg
 
+		// Disable HTTP/2 when explicitly configured (h2: false).
+		// Go's HTTP/2 framing strips Connection and Upgrade hop-by-hop headers,
+		// which prevents WebSocket upgrade detection. Services that need
+		// WebSocket support must disable HTTP/2 on the listener.
+		if svc.H2 != nil && !*svc.H2 {
+			srv.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
+			slog.Debug("HTTP/2 disabled",
+				"service", name,
+			)
+		}
+
 		slog.Debug("loaded TLS certificates",
 			"service", name,
 			"count", len(certs),

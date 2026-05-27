@@ -42,6 +42,7 @@ type Service struct {
 	TLS     bool          `json:"tls"`
 	TLSCert string        `json:"tls_cert,omitempty"`
 	TLSKey  string        `json:"tls_key,omitempty"`
+	H2      *bool         `json:"h2,omitempty"` // Enable HTTP/2 on TLS listener (default: true). Set to false for WebSocket support.
 	Config  *ServerConfig `json:"config,omitempty"`
 	Plugins []string      `json:"plugins,omitempty"`
 	Routes  []*Route      `json:"routes"`
