@@ -126,6 +126,15 @@ type ConnResponse struct {
 	Allow bool `msgpack:"ok" json:"allow"`
 }
 
+// DisconnectEvent carries connection statistics for on_disconnect hooks.
+type DisconnectEvent struct {
+	RouteID    string `msgpack:"r" json:"route_id"`
+	RemoteAddr string `msgpack:"a" json:"remote_addr"`
+	BytesRx    int64  `msgpack:"rx" json:"bytes_rx"`
+	BytesTx    int64  `msgpack:"tx" json:"bytes_tx"`
+	DurationMs int64  `msgpack:"ms" json:"duration_ms"`
+}
+
 // SpeedLimit defines bandwidth caps in Mbps.
 // When GroupKey is set, all connections sharing the same key share a single
 // bandwidth budget instead of each getting independent per-connection limits.
@@ -139,9 +148,10 @@ type SpeedLimit struct {
 type HookType byte
 
 const (
-	HookRequest  HookType = 1
-	HookResponse HookType = 2
-	HookConnect  HookType = 3
+	HookRequest    HookType = 1
+	HookResponse   HookType = 2
+	HookConnect    HookType = 3
+	HookDisconnect HookType = 4
 )
 
 // Envelope wraps all socket messages with a type discriminator.

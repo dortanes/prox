@@ -52,6 +52,12 @@ func handleConn(conn net.Conn, p *Plugin) {
 			return
 		}
 
+		// Fire-and-forget: process without response.
+		if env.Hook == HookDisconnect {
+			handleDisconnect(p, env.Data)
+			continue
+		}
+
 		var respBytes []byte
 
 		switch env.Hook {
@@ -126,6 +132,18 @@ func handleConnect(p *Plugin, data []byte) []byte {
 		resp = &ConnResponse{Allow: true}
 	}
 	return mustMarshal(resp)
+}
+
+func handleDisconnect(p *Plugin, data []byte) {
+	if p.onDisc == nil {
+		return
+	}
+	var event DisconnectEvent
+	if err := msgpack.Unmarshal(data, &event); err != nil {
+		log.Printf("unmarshal disconnect: %v", err)
+		return
+	}
+	p.onDisc(&event)
 }
 
 // responsePair bundles request + upstream response for the on_response hook.

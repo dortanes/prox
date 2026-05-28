@@ -18,6 +18,9 @@ type ResponseHandler func(req *Request, resp *UpstreamResponse) *ResponseMod
 // ConnectHandler processes an L4 connection and returns a verdict.
 type ConnectHandler func(conn *ConnRequest) *ConnResponse
 
+// DisconnectHandler receives connection statistics after a connection ends.
+type DisconnectHandler func(event *DisconnectEvent)
+
 // ConfigureHandler is called when the plugin receives route configuration.
 type ConfigureHandler func(route Route)
 
@@ -29,6 +32,7 @@ type Plugin struct {
 	onReq     RequestHandler
 	onResp    ResponseHandler
 	onConn    ConnectHandler
+	onDisc    DisconnectHandler
 }
 
 // New creates a new plugin instance.
@@ -59,6 +63,12 @@ func (p *Plugin) OnResponse(h ResponseHandler) {
 // When registered, the plugin advertises the "on_connect" capability.
 func (p *Plugin) OnConnect(h ConnectHandler) {
 	p.onConn = h
+}
+
+// OnDisconnect registers a handler for connection statistics events.
+// This is a fire-and-forget notification — no response is expected.
+func (p *Plugin) OnDisconnect(h DisconnectHandler) {
+	p.onDisc = h
 }
 
 // SetTargets pushes a flat target list for the given route.
@@ -216,6 +226,9 @@ func (p *Plugin) hooks() []string {
 	}
 	if p.onConn != nil {
 		h = append(h, "on_connect")
+	}
+	if p.onDisc != nil {
+		h = append(h, "on_disconnect")
 	}
 	return h
 }
