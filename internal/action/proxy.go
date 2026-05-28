@@ -3,6 +3,7 @@ package action
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -92,6 +93,12 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 		}
 		proxy.Transport = transport
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			if errors.Is(err, context.Canceled) {
+				slog.Debug("client disconnected",
+					"path", r.URL.Path,
+				)
+				return
+			}
 			slog.Warn("upstream error",
 				"path", r.URL.Path,
 				"err", err,
@@ -129,6 +136,13 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 	}
 	proxy.Transport = transport
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		if errors.Is(err, context.Canceled) {
+			slog.Debug("client disconnected",
+				"upstream", act.Upstream,
+				"path", r.URL.Path,
+			)
+			return
+		}
 		slog.Warn("upstream error",
 			"upstream", act.Upstream,
 			"path", r.URL.Path,
