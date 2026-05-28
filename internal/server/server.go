@@ -718,6 +718,16 @@ var capturePool = sync.Pool{
 	New: func() any { return &logger.ResponseCapture{} },
 }
 
+// countingReaderPool reuses CountingReader for disconnect byte counting.
+var countingReaderPool = sync.Pool{
+	New: func() any { return &action.CountingReader{} },
+}
+
+// connStatsPool reuses ConnStats for hijacked-path byte accumulation.
+var connStatsPool = sync.Pool{
+	New: func() any { return &action.ConnStats{} },
+}
+
 func acquireCapture(w http.ResponseWriter) *logger.ResponseCapture {
 	c := capturePool.Get().(*logger.ResponseCapture)
 	c.Reset(w)
@@ -889,6 +899,34 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Disconnect hook setup — zero cost when not subscribed.
+	var cr *action.CountingReader
+	var cs *action.ConnStats
+	var hasDisconnect bool
+	var disconnectRouteID string
+	if h.plugins != nil {
+		mr := router.GetMatchResult(r)
+		if mr != nil {
+			disconnectRouteID = mr.RouteID(h.name)
+			hasDisconnect = h.plugins.HasHook(disconnectRouteID, plugin.HookOnDisconnect)
+		}
+	}
+	if hasDisconnect {
+		if !accessOn {
+			start = time.Now()
+		}
+		// Wrap r.Body with pooled counting reader for upload bytes.
+		cr = countingReaderPool.Get().(*action.CountingReader)
+		cr.Reset(r.Body)
+		r.Body = cr
+
+		// Inject ConnStats for hijacked paths (WebSocket, CONNECT).
+		cs = connStatsPool.Get().(*action.ConnStats)
+		atomic.StoreInt64(&cs.BytesRx, 0)
+		atomic.StoreInt64(&cs.BytesTx, 0)
+		r = r.WithContext(action.NewConnStatsContext(r.Context(), cs))
+	}
+
 	// Apply speed limiting.
 	if mr := router.GetMatchResult(r); mr != nil {
 		var cleanup func()
@@ -922,6 +960,30 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	handler.ServeHTTP(w, r)
+
+	// Fire disconnect notification after handler completes.
+	if hasDisconnect {
+		bytesRx := cr.N
+		bytesTx := int64(0)
+		if capture != nil {
+			bytesTx = capture.BytesOut()
+		}
+		if cs != nil {
+			bytesRx += cs.LoadRx()
+			bytesTx += cs.LoadTx()
+		}
+		h.plugins.OnDisconnect(disconnectRouteID, &plugin.DisconnectInfo{
+			RouteID:    disconnectRouteID,
+			RemoteAddr: r.RemoteAddr,
+			BytesRx:    bytesRx,
+			BytesTx:    bytesTx,
+			DurationMs: time.Since(start).Milliseconds(),
+		})
+
+		cr.Reset(nil)
+		countingReaderPool.Put(cr)
+		connStatsPool.Put(cs)
+	}
 }
 
 // maxPluginBody is the maximum request body size forwarded to plugins.
