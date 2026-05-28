@@ -81,7 +81,7 @@ p.OnRequest(func(req *sdk.Request) *sdk.Response {
     // req.Query, req.Host, req.Proto, req.ContentLength
     // req.Header("Authorization"), req.Headers, req.Body
     // req.QueryParam("token")
-    // req.MatchDomain, req.MatchGlob, req.MatchPath, req.Vars
+    // req.MatchDomain, req.MatchGlob, req.MatchPath, req.Vars, req.Target
     return sdk.Allow(sdk.WithHeader("X-Verified", "true"))
 })
 ```
@@ -132,6 +132,7 @@ p.OnConnect(func(conn *sdk.ConnRequest) *sdk.ConnResponse {
 | `MatchGlob`     | `string`          | Captured `**` glob suffix                    |
 | `MatchPath`     | `string`          | Path pattern from config                     |
 | `Vars`          | `map[string]string` | Route-level `set` variables                |
+| `Target`        | `string`          | Backend target selected by balancer          |
 
 ### Helper Methods
 
