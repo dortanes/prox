@@ -156,8 +156,9 @@ const (
 // Action defines what happens when a route matches.
 // Plugins declared at the action level apply to all routes using this action.
 type Action struct {
-	Type    ActionType `json:"type"`
-	Plugins []string   `json:"plugins,omitempty"`
+	Type      ActionType `json:"type"`
+	Plugins   []string   `json:"plugins,omitempty"`
+	AccessLog string     `json:"access_log,omitempty"` // "off" to disable, or file path for per-action log
 
 	// Proxy-specific fields.
 	Upstream string   `json:"upstream,omitempty"`

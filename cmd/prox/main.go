@@ -246,14 +246,32 @@ func setupAccessLogging(cfg *config.Config) error {
 	routePaths := make(map[string]string)
 	for name, svc := range cfg.Services {
 		for i, route := range svc.Routes {
-			if route.AccessLog != "" {
-				routeID := fmt.Sprintf("%s:%d", name, i)
-				routePaths[routeID] = route.AccessLog
+			// Route-level access_log takes priority over action-level.
+			path := route.AccessLog
+			if path == "" {
+				path = resolveActionAccessLog(route, cfg)
+			}
+			if path != "" {
+				routePaths[fmt.Sprintf("%s:%d", name, i)] = path
 			}
 		}
 	}
 
 	return logger.SetupAccess(globalPath, routePaths)
+}
+
+// resolveActionAccessLog returns the access_log value from the action
+// referenced by the route (inline or named). Returns "" if unset.
+func resolveActionAccessLog(route *config.Route, cfg *config.Config) string {
+	if route.Action.Inline != nil {
+		return route.Action.Inline.AccessLog
+	}
+	if route.Action.Name != "" {
+		if act, ok := cfg.Actions[route.Action.Name]; ok {
+			return act.AccessLog
+		}
+	}
+	return ""
 }
 
 // runValidate checks the config and exits with 0 (valid) or 1 (invalid).

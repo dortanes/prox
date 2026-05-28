@@ -27,17 +27,22 @@ type AccessEntry struct {
 	UserAgent string    `json:"user_agent,omitempty"`
 }
 
+// accessOff is a sentinel stored in accessRoutes for routes with access_log: "off".
+var accessOff = &FileWriter{}
+
 var (
 	accessMu          sync.RWMutex
 	accessGlobal      *FileWriter
-	accessRoutes      map[string]*FileWriter
-	accessWriters     []*FileWriter // deduplicated for reopen/close
+	accessRoutes      map[string]*FileWriter // nil = inherit global, accessOff = disabled
+	accessWriters     []*FileWriter          // deduplicated for reopen/close
 	accessEnabledFlag atomic.Bool
 )
 
 // SetupAccess configures access log file destinations.
 // globalPath sets the default access log file. routePaths maps route IDs to
-// per-route log files. Routes without an explicit path fall back to the global file.
+// per-route log files. The special value "off" disables all access logging
+// (both file and console) for that route. Routes without an explicit path
+// fall back to the global file.
 func SetupAccess(globalPath string, routePaths map[string]string) error {
 	accessMu.Lock()
 	defer accessMu.Unlock()
@@ -61,6 +66,10 @@ func SetupAccess(globalPath string, routePaths map[string]string) error {
 	// Per-route access logs (deduplicate by path).
 	accessRoutes = make(map[string]*FileWriter, len(routePaths))
 	for routeID, path := range routePaths {
+		if path == "off" {
+			accessRoutes[routeID] = accessOff
+			continue
+		}
 		if w, ok := writerByPath[path]; ok {
 			accessRoutes[routeID] = w
 			continue
@@ -108,13 +117,18 @@ func LogAccess(routeID string, entry AccessEntry) {
 		level = slog.LevelWarn
 	}
 
-	// Resolve file writer early.
+	// Resolve file writer.
 	accessMu.RLock()
 	w := accessRoutes[routeID]
 	if w == nil {
 		w = accessGlobal
 	}
 	accessMu.RUnlock()
+
+	// Route has access logging disabled.
+	if w == accessOff {
+		return
+	}
 
 	// Fast path: skip all formatting when nothing will be emitted.
 	consoleEnabled := slog.Default().Enabled(context.Background(), level)
