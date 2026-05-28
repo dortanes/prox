@@ -209,7 +209,13 @@ func chainConnect(upstream net.Conn, target string, timeout time.Duration) error
 	// A large buffered reader could consume bytes beyond the response that
 	// belong to the tunnel data stream.
 	br := bufio.NewReaderSize(upstream, 256)
-	resp, err := http.ReadResponse(br, nil)
+
+	// Pass CONNECT as the request method so http.ReadResponse knows
+	// that 2xx responses carry no body (RFC 7231 §4.3.6). Without this,
+	// resp.Body.Close() would try to drain the connection, consuming
+	// tunnel data and causing the first proxied request to time out.
+	connectReq := &http.Request{Method: http.MethodConnect}
+	resp, err := http.ReadResponse(br, connectReq)
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}
