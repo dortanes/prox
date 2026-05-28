@@ -160,7 +160,7 @@ func serveConnect(w http.ResponseWriter, r *http.Request, target *url.URL, timeo
 		}
 	}
 
-	upstream, err := net.DialTimeout("tcp", host, timeout)
+	upstream, err := dialUpstream(target.Scheme, host, target.Hostname(), timeout)
 	if err != nil {
 		slog.Warn("connect dial failed",
 			"upstream", host,
