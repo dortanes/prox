@@ -108,6 +108,7 @@ type RequestInfo struct {
 	MatchGlob     string            `msgpack:"mg,omitempty"`
 	MatchPath     string            `msgpack:"mp,omitempty"`
 	Vars          map[string]string `msgpack:"v,omitempty"`
+	Target        string            `msgpack:"tg,omitempty"`
 }
 
 // AuthorizeResult is the plugin's verdict for an on_request hook.

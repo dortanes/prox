@@ -952,6 +952,7 @@ func buildRequestInfo(r *http.Request, mr *router.MatchResult, routeID string) *
 		MatchGlob:     mr.MatchGlob,
 		MatchPath:     mr.MatchPath,
 		Vars:          mr.Vars,
+		Target:        mr.Target,
 	}
 
 	// Read up to maxPluginBody bytes for the plugin, then restore the body.

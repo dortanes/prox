@@ -29,6 +29,7 @@ type Request struct {
 	MatchGlob     string            `msgpack:"mg,omitempty" json:"match_glob,omitempty"`
 	MatchPath     string            `msgpack:"mp,omitempty" json:"match_path,omitempty"`
 	Vars          map[string]string `msgpack:"v,omitempty" json:"vars,omitempty"`
+	Target        string            `msgpack:"tg,omitempty" json:"target,omitempty"`
 }
 
 // Header returns the value of a request header (case-sensitive key).
