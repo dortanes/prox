@@ -192,7 +192,7 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 	match := router.GetMatchResult(r)
 	needsTarget := strings.Contains(p.upstreamTpl, "{target}")
 	if needsTarget && (match == nil || match.Target == "") {
-		if p.fallback != nil {
+		if p.fallback != nil && r.Method != http.MethodConnect {
 			slog.Debug("no target, falling back",
 				"host", r.Host,
 				"path", r.URL.Path,
