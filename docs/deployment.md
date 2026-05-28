@@ -17,7 +17,7 @@ services:
     volumes:
       - ./config/:/etc/prox/config/
       - ./certs/:/etc/prox/certs/
-    command: ["serve", "-config", "/etc/prox/config/"]
+    command: ["prox", "serve", "-config", "/etc/prox/config/"]
 ```
 
 Standalone container:

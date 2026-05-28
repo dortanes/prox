@@ -3,7 +3,7 @@ FROM golang:1.25-alpine AS golang
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates git
 COPY --from=golang /usr/local/go /usr/local/go
-ENV PATH="/usr/local/go/bin:${PATH}"
+ENV PATH="/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 COPY prox /usr/local/bin/prox
-ENTRYPOINT ["prox"]
-CMD ["serve", "-config", "/etc/prox/config.json5"]
+RUN ln -s /usr/local/bin/prox /usr/bin/prox && ln -s /usr/local/bin/prox /bin/prox
+CMD ["/usr/local/bin/prox", "serve", "-config", "/etc/prox/config.json5"]
