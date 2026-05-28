@@ -557,12 +557,15 @@ func (ms *managedServer) serveDirect() error {
 		ms.rawLns[i] = ln
 	}
 
-	slog.Info("starting server with SO_REUSEPORT scaling",
+	slog.Info("starting server",
 		"service", ms.name,
 		"addr", ms.server.Addr,
 		"tls", ms.server.TLSConfig != nil,
-		"max_conns", ms.maxConns,
+	)
+	slog.Debug("server tuning",
+		"service", ms.name,
 		"workers", numWorkers,
+		"max_conns", ms.maxConns,
 	)
 
 	ms.servers = make([]*http.Server, numWorkers)
@@ -675,7 +678,7 @@ func (g *Group) shutdown() {
 					}(srv)
 				}
 				swg.Wait()
-				slog.Info("server stopped", "service", ms.name)
+				slog.Debug("server stopped", "service", ms.name)
 			} else {
 				if err := ms.server.Shutdown(ctx); err != nil {
 					slog.Warn("shutdown timeout, forcing close",
@@ -684,7 +687,7 @@ func (g *Group) shutdown() {
 					)
 					ms.server.Close()
 				} else {
-					slog.Info("server stopped", "service", ms.name)
+					slog.Debug("server stopped", "service", ms.name)
 				}
 			}
 

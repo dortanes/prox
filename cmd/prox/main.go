@@ -98,7 +98,7 @@ func runServe(args []string) int {
 	}
 	defer logger.Close()
 
-	slog.Info("loading configuration", "path", *configPath)
+	slog.Debug("loading configuration", "path", *configPath)
 
 	result, err := config.LoadFile(*configPath)
 	if err != nil {
@@ -131,7 +131,7 @@ func runServe(args []string) int {
 		return 1
 	}
 
-	slog.Info("config loaded",
+	slog.Debug("config loaded",
 		"services", len(cfg.Services),
 		"actions", len(cfg.Actions),
 		"resources", len(cfg.Resources),
@@ -179,7 +179,7 @@ func runServe(args []string) int {
 		go watcher.Watch(ctx, result.Paths, func() {
 			triggerReload(reloadCh)
 		})
-		slog.Info("file watcher started", "files", len(result.Paths))
+		slog.Debug("file watcher started", "files", len(result.Paths))
 	}
 
 	go func() {

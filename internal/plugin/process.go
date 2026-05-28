@@ -120,7 +120,7 @@ func buildPluginFile(path string, srcInfo os.FileInfo) (string, error) {
 		return binPath, nil
 	}
 
-	slog.Info("building plugin",
+	slog.Debug("building plugin",
 		"source", filepath.Base(path),
 		"output", filepath.Base(binPath),
 	)
@@ -147,7 +147,7 @@ func buildPluginDir(dir string) (string, error) {
 		return binPath, nil
 	}
 
-	slog.Info("building plugin",
+	slog.Debug("building plugin",
 		"source", filepath.Base(dir)+"/",
 		"output", filepath.Base(binPath),
 	)
@@ -217,7 +217,7 @@ func runBuild(dir string, args ...string) error {
 		if tidyErr := tidyPluginDir(dir); tidyErr != nil {
 			slog.Warn("plugin dependency resolution failed", "dir", dir, "err", tidyErr)
 		} else {
-			slog.Info("retrying plugin build", "dir", dir)
+			slog.Debug("retrying plugin build", "dir", dir)
 			cmdRetry := exec.Command("go", append([]string{"build"}, args...)...)
 			cmdRetry.Dir = dir
 			cmdRetry.Stderr = os.Stderr
