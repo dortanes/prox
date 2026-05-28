@@ -6,9 +6,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /prox ./cmd/prox
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates git
-COPY --from=build /usr/local/go /usr/local/go
-ENV PATH="/usr/local/go/bin:${PATH}"
+RUN apk add --no-cache ca-certificates
 COPY --from=build /prox /usr/local/bin/prox
 ENTRYPOINT ["prox"]
 CMD ["serve", "-config", "/etc/prox/config.json5"]

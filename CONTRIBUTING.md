@@ -58,15 +58,20 @@ config.json5 ─┐
 
 ```
 prox/
-├── cmd/prox/           CLI entrypoint
+├── cmd/prox/           CLI entrypoint (serve, validate, build)
 ├── internal/
 │   ├── config/         Config types, loader, validator
 │   ├── server/         HTTP(S) lifecycle, hot reload
 │   ├── dispatcher/     L4 TCP dispatching (SNI peek, pass-through relay)
 │   ├── router/         L7 domain + path + method matching
 │   ├── action/         Handlers: proxy, static, serve, pass
+│   ├── balancer/       Load balancing strategies (round-robin, random, least-conn)
+│   ├── plugin/         Plugin lifecycle and IPC (stdin/stdout, Unix sockets)
+│   ├── throttle/       Speed limiting (per-connection and shared budgets)
+│   ├── logger/         Structured logging, colorized console output
 │   ├── resource/       Content resolver
 │   └── watcher/        File change detection (polling)
+├── sdk/                Plugin SDK — separate Go module for building plugins
 ├── Dockerfile
 ├── Makefile
 └── go.mod
