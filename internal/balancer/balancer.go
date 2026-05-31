@@ -22,6 +22,9 @@ type Balancer interface {
 	// SwapTargets atomically replaces the target pool.
 	// Active connections tracked by Done() are reset.
 	SwapTargets(targets []string)
+
+	// Targets returns a copy of the current target pool.
+	Targets() []string
 }
 
 // RoundRobin distributes requests evenly across targets in order.
@@ -56,6 +59,11 @@ func (rr *RoundRobin) SwapTargets(targets []string) {
 	rr.pool.Store(&rrPool{targets: targets})
 }
 
+func (rr *RoundRobin) Targets() []string {
+	p := rr.pool.Load()
+	return append([]string(nil), p.targets...)
+}
+
 // Random selects a target at random.
 type Random struct {
 	pool atomic.Pointer[randPool]
@@ -84,6 +92,11 @@ func (r *Random) Done(string) {}
 
 func (r *Random) SwapTargets(targets []string) {
 	r.pool.Store(&randPool{targets: targets})
+}
+
+func (r *Random) Targets() []string {
+	p := r.pool.Load()
+	return append([]string(nil), p.targets...)
 }
 
 // LeastConn routes to the target with the fewest active connections.
@@ -158,6 +171,11 @@ func (lc *LeastConn) SwapTargets(targets []string) {
 	defer lc.mu.Unlock()
 
 	lc.pool.Store(newLCPool(targets))
+}
+
+func (lc *LeastConn) Targets() []string {
+	p := lc.pool.Load()
+	return append([]string(nil), p.targets...)
 }
 
 // Conns returns the current active connection count for a target.
@@ -236,6 +254,10 @@ func (g *Grouped) Done(target string) {
 func (g *Grouped) SwapTargets(targets []string) {
 	g.inner.SwapTargets(targets)
 	g.groups.Store(nil)
+}
+
+func (g *Grouped) Targets() []string {
+	return g.inner.Targets()
 }
 
 // SwapGroupedTargets atomically replaces the per-key target pools.

@@ -1,4 +1,11 @@
 {
+  // Admin API — optional management endpoint for external integration.
+  // Disabled by default. Uncomment to enable.
+  // admin: {
+  //   listen: "127.0.0.1:9090",  // TCP address, or "unix:///var/run/prox.sock"
+  //   token: "your-secret-token", // Optional Bearer token for authentication
+  // },
+
   // Logging configuration.
   // Level can be overridden by LOG_LEVEL environment variable.
   logging: {

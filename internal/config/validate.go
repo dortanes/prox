@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -26,6 +28,7 @@ func Validate(cfg *Config) error {
 	v.validatePluginsRegistry()
 	v.validateActions()
 	v.validateLogging()
+	v.validateAdmin()
 
 	if len(v.issues) > 0 {
 		return &ValidationError{Issues: v.issues}
@@ -456,5 +459,37 @@ func (v *validator) validateLogging() {
 
 	if v.cfg.Logging.Level != "" && !validLogLevels[strings.ToLower(v.cfg.Logging.Level)] {
 		v.addIssue("logging.level: unknown level %q (expected debug, info, warn, or error)", v.cfg.Logging.Level)
+	}
+}
+
+func (v *validator) validateAdmin() {
+	admin := v.cfg.Admin
+	if admin == nil {
+		return
+	}
+
+	if admin.Listen == "" {
+		v.addIssue("admin: listen address is required")
+		return
+	}
+
+	// Unix socket path validation.
+	if strings.HasPrefix(admin.Listen, "unix://") {
+		path := strings.TrimPrefix(admin.Listen, "unix://")
+		if path == "" {
+			v.addIssue("admin: unix socket path is empty")
+		}
+		return
+	}
+
+	// Warn if TCP listen address is not localhost.
+	host := admin.Listen
+	if h, _, err := net.SplitHostPort(admin.Listen); err == nil {
+		host = h
+	}
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" && host != "" {
+		slog.Warn("admin API is listening on a non-localhost address",
+			"listen", admin.Listen,
+		)
 	}
 }

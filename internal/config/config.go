@@ -20,6 +20,15 @@ type Config struct {
 	Actions   map[string]*Action   `json:"actions"`
 	Resources map[string]*Resource `json:"resources"`
 	Logging   *LoggingConfig       `json:"logging,omitempty"`
+	Admin     *AdminConfig         `json:"admin,omitempty"`
+}
+
+// AdminConfig controls the optional management API server.
+// When configured, prox starts an HTTP API on the specified address
+// for health checks, config reload, and runtime inspection.
+type AdminConfig struct {
+	Listen string `json:"listen"`          // TCP ("127.0.0.1:9090") or Unix socket ("unix:///var/run/prox.sock")
+	Token  string `json:"token,omitempty"` // Bearer token for authentication (optional)
 }
 
 // LoggingConfig controls log output destinations and verbosity.

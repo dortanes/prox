@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -255,7 +256,142 @@ func (g *Group) Reload(cfg *config.Config) error {
 	}
 
 	slog.Info("reload complete", "services_swapped", swapped)
+
+	g.cfg = cfg
+
 	return nil
+}
+
+// RouteCount returns the total number of routes across all services.
+func (g *Group) RouteCount() int {
+	count := 0
+	for _, svc := range g.cfg.Services {
+		count += len(svc.Routes)
+	}
+	return count
+}
+
+// ServiceInfo returns metadata about each configured service.
+func (g *Group) ServiceInfo() []ServiceStatus {
+	names := make([]string, 0, len(g.cfg.Services))
+	for name := range g.cfg.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	result := make([]ServiceStatus, 0, len(names))
+	for _, name := range names {
+		svc := g.cfg.Services[name]
+		result = append(result, ServiceStatus{
+			Name:   name,
+			Listen: svc.Listen,
+			TLS:    svc.TLS,
+			ACME:   svc.ACME != nil,
+			Routes: len(svc.Routes),
+		})
+	}
+	return result
+}
+
+// ServiceStatus describes a running service for external inspection.
+type ServiceStatus struct {
+	Name   string `json:"name"`
+	Listen string `json:"listen"`
+	TLS    bool   `json:"tls"`
+	ACME   bool   `json:"acme"`
+	Routes int    `json:"routes"`
+}
+
+// CertificateStatus returns certificate status across all ACME-enabled services.
+func (g *Group) CertificateStatus() []proxacme.CertStatus {
+	var all []proxacme.CertStatus
+	for _, ms := range g.servers {
+		if ms.acme != nil {
+			all = append(all, ms.acme.CertificateStatus()...)
+		}
+	}
+	return all
+}
+
+// PluginNames returns the names and paths of all configured plugins.
+func (g *Group) PluginNames() []PluginStatus {
+	names := make([]string, 0, len(g.cfg.Plugins))
+	for name := range g.cfg.Plugins {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	result := make([]PluginStatus, 0, len(names))
+	for _, name := range names {
+		p := g.cfg.Plugins[name]
+		result = append(result, PluginStatus{Name: name, Path: p.Path})
+	}
+	return result
+}
+
+// PluginStatus describes a configured plugin for external inspection.
+type PluginStatus struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+// CurrentConfig returns the active configuration.
+func (g *Group) CurrentConfig() *config.Config {
+	return g.cfg
+}
+
+// BalancerStatus describes a route's balancer state for external inspection.
+type BalancerStatus struct {
+	Service    string   `json:"service"`
+	RouteIndex int      `json:"route_index"`
+	Type       string   `json:"type"`
+	Action     string   `json:"action"`
+	Targets    []string `json:"targets"`
+}
+
+// BalancerInfo returns the current state of all balancers.
+func (g *Group) BalancerInfo() []BalancerStatus {
+	var result []BalancerStatus
+
+	names := make([]string, 0, len(g.cfg.Services))
+	for name := range g.cfg.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, svcName := range names {
+		svc := g.cfg.Services[svcName]
+		handler, ok := g.handlers[svcName]
+		if !ok {
+			continue
+		}
+
+		snap := handler.current.Load()
+		if snap == nil {
+			continue
+		}
+
+		for i, route := range svc.Routes {
+			if route.Balancer == nil {
+				continue
+			}
+
+			b := snap.router.RouteBalancer(i)
+			if b == nil {
+				continue
+			}
+
+			result = append(result, BalancerStatus{
+				Service:    svcName,
+				RouteIndex: i,
+				Type:       string(route.Balancer.Type),
+				Action:     route.Action.Name,
+				Targets:    b.Targets(),
+			})
+		}
+	}
+
+	return result
 }
 
 func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry, rt *router.Router, plugins *plugin.Manager, configDir string) (*managedServer, *swappableHandler, error) {

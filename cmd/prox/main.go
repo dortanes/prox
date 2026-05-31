@@ -14,8 +14,11 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"sync"
 	"syscall"
+	"time"
 
+	"github.com/dortanes/prox/internal/admin"
 	"github.com/dortanes/prox/internal/config"
 	"github.com/dortanes/prox/internal/logger"
 	"github.com/dortanes/prox/internal/plugin"
@@ -88,6 +91,8 @@ func runServe(args []string) int {
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
 	watchEnabled := fs.Bool("watch", true, "watch config files for changes and auto-reload")
 	_ = fs.Parse(args)
+
+	startTime := time.Now()
 
 	// Priority: LOG_LEVEL env > -log-level flag > config file > "info"
 	level := *logLevel
@@ -164,6 +169,9 @@ func runServe(args []string) int {
 		os.Exit(1)
 	}()
 
+	// Reload mutex prevents concurrent reloads from signals, file watcher, and admin API.
+	var reloadMu sync.Mutex
+
 	reloadCh := make(chan struct{}, 1)
 
 	sighupCh := make(chan os.Signal, 1)
@@ -192,10 +200,80 @@ func runServe(args []string) int {
 			case <-ctx.Done():
 				return
 			case <-reloadCh:
-				performReload(*configPath, group)
+				performReload(&reloadMu, *configPath, group)
 			}
 		}
 	}()
+
+	// Start admin API if configured (zero-overhead when absent).
+	if cfg.Admin != nil {
+		adminSrv := admin.New(cfg.Admin, admin.Deps{
+			StartTime: startTime,
+			Version:   version,
+			GetConfig: func() *config.Config {
+				return group.CurrentConfig()
+			},
+			Reload: func() *admin.ReloadResult {
+				return performReloadSync(&reloadMu, *configPath, group)
+			},
+			RouteCount: func() int {
+				return group.RouteCount()
+			},
+			ServiceInfo: func() []admin.ServiceEntry {
+				info := group.ServiceInfo()
+				entries := make([]admin.ServiceEntry, len(info))
+				for i, s := range info {
+					entries[i] = admin.ServiceEntry{
+						Name: s.Name, Listen: s.Listen,
+						TLS: s.TLS, ACME: s.ACME, Routes: s.Routes,
+					}
+				}
+				return entries
+			},
+			CertStatus: func() []admin.CertEntry {
+				status := group.CertificateStatus()
+				entries := make([]admin.CertEntry, len(status))
+				for i, c := range status {
+					entries[i] = admin.CertEntry{
+						Domain: c.Domain, Status: c.Status,
+						Expires: c.Expires, Issuer: c.Issuer,
+					}
+				}
+				return entries
+			},
+			PluginInfo: func() []admin.PluginEntry {
+				status := group.PluginNames()
+				entries := make([]admin.PluginEntry, len(status))
+				for i, p := range status {
+					entries[i] = admin.PluginEntry{Name: p.Name, Path: p.Path}
+				}
+				return entries
+			},
+			BalancerInfo: func() []admin.BalancerEntry {
+				status := group.BalancerInfo()
+				entries := make([]admin.BalancerEntry, len(status))
+				for i, b := range status {
+					entries[i] = admin.BalancerEntry{
+						Service: b.Service, RouteIndex: b.RouteIndex,
+						Type: b.Type, Action: b.Action, Targets: b.Targets,
+					}
+				}
+				return entries
+			},
+		})
+
+		go func() {
+			if err := adminSrv.ListenAndServe(); err != nil {
+				slog.Error("admin API failed", "err", err)
+			}
+		}()
+
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = adminSrv.Shutdown(shutdownCtx)
+		}()
+	}
 
 	if err := group.ListenAndServe(ctx); err != nil {
 		slog.Error("server failed", "err", err)
@@ -214,7 +292,11 @@ func triggerReload(ch chan struct{}) {
 	}
 }
 
-func performReload(path string, group *server.Group) {
+// performReload executes an async reload triggered by SIGHUP or file watcher.
+func performReload(mu *sync.Mutex, path string, group *server.Group) {
+	mu.Lock()
+	defer mu.Unlock()
+
 	slog.Info("reloading config", "path", path)
 
 	result, err := config.LoadFile(path)
@@ -237,6 +319,39 @@ func performReload(path string, group *server.Group) {
 			"err", err,
 		)
 		return
+	}
+}
+
+// performReloadSync executes a synchronous reload for the admin API,
+// returning a structured result instead of logging.
+func performReloadSync(mu *sync.Mutex, path string, group *server.Group) *admin.ReloadResult {
+	mu.Lock()
+	defer mu.Unlock()
+
+	slog.Info("reloading config (admin API)", "path", path)
+
+	result, err := config.LoadFile(path)
+	if err != nil {
+		return &admin.ReloadResult{OK: false, Error: err.Error()}
+	}
+
+	if err := setupAccessLogging(result.Config); err != nil {
+		return &admin.ReloadResult{OK: false, Error: err.Error()}
+	}
+
+	if err := group.Reload(result.Config); err != nil {
+		return &admin.ReloadResult{OK: false, Error: err.Error()}
+	}
+
+	routeCount := 0
+	for _, svc := range result.Config.Services {
+		routeCount += len(svc.Routes)
+	}
+
+	return &admin.ReloadResult{
+		OK:       true,
+		Routes:   routeCount,
+		Services: len(result.Config.Services),
 	}
 }
 
