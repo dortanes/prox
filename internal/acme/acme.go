@@ -123,17 +123,17 @@ func (m *Manager) CertificateStatus() []CertStatus {
 func (m *Manager) certStatusForDomain(domain string) CertStatus {
 	cs := CertStatus{Domain: domain, Status: "pending"}
 
-	// Query the certificate cache via GetCertificate with a synthetic hello.
-	hello := &tls.ClientHelloInfo{ServerName: domain}
-	cert, err := m.magic.GetCertificate(hello)
-	if err != nil || cert == nil {
+	// Query the certificate cache directly to avoid panic during synthetic handshake.
+	certs := m.cache.AllMatchingCertificates(domain)
+	if len(certs) == 0 {
 		return cs
 	}
+	cert := &certs[0]
 
 	// Parse the leaf certificate for expiry and issuer details.
 	leaf := cert.Leaf
-	if leaf == nil && len(cert.Certificate) > 0 {
-		leaf, _ = x509.ParseCertificate(cert.Certificate[0])
+	if leaf == nil && len(cert.Certificate.Certificate) > 0 {
+		leaf, _ = x509.ParseCertificate(cert.Certificate.Certificate[0])
 	}
 
 	cs.Status = "active"
