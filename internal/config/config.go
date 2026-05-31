@@ -140,6 +140,11 @@ type ACMEDNSConfig struct {
 	// If empty, read from the provider's environment variable:
 	//   cloudflare → CF_DNS_API_TOKEN
 	Token string `json:"token,omitempty"`
+
+	// Discover fetches all domains from the provider account and manages
+	// certificates for each zone (zone + *.zone). When enabled, acme.domains
+	// and route auto-discovery are ignored.
+	Discover bool `json:"discover,omitempty"`
 }
 
 // Route binds a request matcher to an action — either by name or inline.

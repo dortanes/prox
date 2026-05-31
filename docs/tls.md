@@ -96,6 +96,7 @@ With this configuration, prox automatically:
 | `dns` | — | DNS provider config, required when `challenge` is `"dns"` |
 | `dns.provider` | *(required)* | DNS provider name: `"cloudflare"` |
 | `dns.token` | *(env var)* | API token. Falls back to provider env var if empty |
+| `dns.discover` | `false` | Fetch all zones from provider account and manage certificates automatically |
 | `storage` | `"acme/"` | Storage path for certificates and account data |
 | `domains` | *(auto)* | Explicit domain list. If empty, auto-discovered from routes |
 
@@ -178,6 +179,32 @@ acme: {
 
 !!! tip
     Using the environment variable `CF_DNS_API_TOKEN` keeps secrets out of your configuration files.
+
+#### Automatic Domain Discovery
+
+When `dns.discover` is enabled, prox fetches all active zones from the provider account and manages certificates for each zone automatically — both the apex domain and wildcard (`example.com` + `*.example.com`).
+
+```json5
+acme: {
+  email: "certs@example.com",
+  challenge: "dns",
+  dns: {
+    provider: "cloudflare",
+    discover: true,
+  },
+  storage: "/mnt/ssl",
+}
+```
+
+With this configuration, prox:
+
+1. Calls the Cloudflare API to list all active zones in the account
+2. Issues certificates for each zone and its wildcard
+3. On reload, re-fetches zones and issues certificates for any new domains
+4. Only requests new certificates when none exist or renewal is due
+
+!!! tip
+    This is ideal for multi-domain setups where domains are added frequently. Add a new domain in Cloudflare, reload prox — the certificate is issued automatically.
 
 ### Wildcard Certificates
 

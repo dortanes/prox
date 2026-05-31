@@ -191,7 +191,7 @@ func (g *Group) Reload(cfg *config.Config) error {
 		slog.Debug("service reloaded", "service", name)
 	}
 
-	// Update ACME domain management if routes changed.
+	// Update ACME domain management if domains changed.
 	for _, ms := range g.servers {
 		if ms.acme == nil {
 			continue
@@ -201,7 +201,23 @@ func (g *Group) Reload(cfg *config.Config) error {
 			continue
 		}
 
-		newDomains := extractDomains(svc.Routes)
+		var newDomains []string
+		if len(svc.ACME.Domains) > 0 {
+			newDomains = svc.ACME.Domains
+		} else if svc.ACME.DNS != nil && svc.ACME.DNS.Discover {
+			discovered, err := proxacme.DiscoverDomains(svc.ACME.DNS)
+			if err != nil {
+				slog.Error("acme: domain discovery failed on reload",
+					"service", ms.name,
+					"err", err,
+				)
+				continue
+			}
+			newDomains = discovered
+		} else {
+			newDomains = extractDomains(svc.Routes)
+		}
+
 		current := ms.acme.ManagedDomains()
 		if !slicesEqual(current, newDomains) {
 			if err := ms.acme.ManageDomains(context.Background(), newDomains); err != nil {
@@ -555,19 +571,36 @@ func (g *Group) ListenAndServe(ctx context.Context) error {
 }
 
 // startACME begins certificate management for all ACME-enabled services.
-// Domains are auto-discovered from routes if not explicitly configured.
+// Domain priority: explicit acme.domains > dns.discover > route auto-discovery.
 func (g *Group) startACME(ctx context.Context, cfg *config.Config) {
 	for _, ms := range g.servers {
 		if ms.acme == nil {
 			continue
 		}
 
+		svc, ok := cfg.Services[ms.name]
+		if !ok {
+			continue
+		}
+
 		domains := ms.acme.ManagedDomains()
-		if len(domains) == 0 {
-			// Auto-discover domains from routes.
-			if svc, ok := cfg.Services[ms.name]; ok {
-				domains = extractDomains(svc.Routes)
+
+		// If no explicit domains, try DNS provider discovery.
+		if len(domains) == 0 && svc.ACME.DNS != nil && svc.ACME.DNS.Discover {
+			discovered, err := proxacme.DiscoverDomains(svc.ACME.DNS)
+			if err != nil {
+				slog.Error("acme: domain discovery failed",
+					"service", ms.name,
+					"err", err,
+				)
+			} else {
+				domains = discovered
 			}
+		}
+
+		// Fall back to route auto-discovery.
+		if len(domains) == 0 {
+			domains = extractDomains(svc.Routes)
 		}
 
 		if len(domains) == 0 {
