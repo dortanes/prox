@@ -14,8 +14,9 @@ import (
 // that were read during loading (the root file + any nested refs).
 // Callers can pass Paths to the file watcher for change detection.
 type LoadResult struct {
-	Config *Config
-	Paths  []string
+	Config    *Config
+	Paths     []string
+	ConfigDir string // directory containing the root config file
 }
 
 // LoadFile reads, parses, and validates a JSON5 configuration.
@@ -31,10 +32,14 @@ func LoadFile(path string) (*LoadResult, error) {
 	}
 
 	var cfg *Config
+	var configDir string
 
 	if info.IsDir() {
+		configDir, _ = filepath.Abs(path)
 		cfg, err = ctx.loadDirectory(path)
 	} else {
+		abs, _ := filepath.Abs(path)
+		configDir = filepath.Dir(abs)
 		cfg, err = ctx.loadRootFile(path)
 	}
 	if err != nil {
@@ -48,8 +53,9 @@ func LoadFile(path string) (*LoadResult, error) {
 	}
 
 	return &LoadResult{
-		Config: cfg,
-		Paths:  ctx.paths(),
+		Config:    cfg,
+		Paths:     ctx.paths(),
+		ConfigDir: configDir,
 	}, nil
 }
 
@@ -149,6 +155,7 @@ type rawService struct {
 	TLS     bool            `json:"tls"`
 	TLSCert string          `json:"tls_cert,omitempty"`
 	TLSKey  string          `json:"tls_key,omitempty"`
+	ACME    *ACMEConfig     `json:"acme,omitempty"`
 	H2      *bool           `json:"h2,omitempty"`
 	Config  *ServerConfig   `json:"config,omitempty"`
 	Plugins []string        `json:"plugins,omitempty"`
@@ -226,6 +233,7 @@ func (lc *loadContext) loadRootFile(path string) (*Config, error) {
 				TLS:     entry.Inline.TLS,
 				TLSCert: entry.Inline.TLSCert,
 				TLSKey:  entry.Inline.TLSKey,
+				ACME:    entry.Inline.ACME,
 				H2:      entry.Inline.H2,
 				Config:  entry.Inline.Config,
 				Plugins: entry.Inline.Plugins,
@@ -325,6 +333,7 @@ type rawFragment struct {
 	TLS            bool                 `json:"tls"`
 	TLSCert        string               `json:"tls_cert,omitempty"`
 	TLSKey         string               `json:"tls_key,omitempty"`
+	ACME           *ACMEConfig          `json:"acme,omitempty"`
 	H2             *bool                `json:"h2,omitempty"`
 	Config         *ServerConfig        `json:"config,omitempty"`
 	ServicePlugins []string             `json:"service_plugins,omitempty"` // service-level plugin refs
@@ -391,6 +400,7 @@ func (lc *loadContext) loadFragment(path string, parent *Config) (*Service, erro
 		TLS:     frag.TLS,
 		TLSCert: frag.TLSCert,
 		TLSKey:  frag.TLSKey,
+		ACME:    frag.ACME,
 		H2:      frag.H2,
 		Config:  frag.Config,
 		Plugins: frag.ServicePlugins,
@@ -523,6 +533,13 @@ func normalize(cfg *Config) {
 			name := fmt.Sprintf("_inline_%s_body", actName)
 			cfg.Resources[name] = act.BodyRef.Inline
 			act.BodyRef = ResourceRef{Name: name}
+		}
+	}
+
+	// Normalize ACME: acme implies tls.
+	for _, svc := range cfg.Services {
+		if svc.ACME != nil {
+			svc.TLS = true
 		}
 	}
 }

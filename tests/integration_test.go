@@ -41,7 +41,7 @@ func startProx(t *testing.T, configPath string, proxyPort int) func() {
 		t.Fatalf("access log setup: %v", err)
 	}
 
-	group, err := server.Build(result.Config)
+	group, err := server.Build(result.Config, result.ConfigDir)
 	if err != nil {
 		t.Fatalf("server build: %v", err)
 	}

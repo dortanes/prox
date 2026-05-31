@@ -61,8 +61,8 @@ func (v *validator) validateService(name string, svc *Service) {
 	}
 
 	if svc.TLS {
-		if svc.TLSCert == "" {
-			v.addIssue("service %q: tls_cert is required when tls is enabled (file or directory path)", name)
+		if svc.TLSCert == "" && svc.ACME == nil {
+			v.addIssue("service %q: tls_cert is required when tls is enabled (file or directory path), unless acme is configured", name)
 		}
 		// tls_key is only required in file mode — in directory mode keys are
 		// discovered automatically alongside their matching .crt/.pem files.
@@ -71,6 +71,7 @@ func (v *validator) validateService(name string, svc *Service) {
 		// server.loadCertificates handle the error at runtime.
 	}
 
+	v.validateACME(name, svc)
 	v.validatePluginNames(fmt.Sprintf("service %q", name), svc.Plugins)
 
 	if len(svc.Routes) == 0 {
@@ -394,6 +395,50 @@ func (v *validator) validateSpeed(prefix string, speed *SpeedConfig) {
 	}
 	if speed.DownloadMbps == 0 && speed.UploadMbps == 0 {
 		v.addIssue("%s: speed requires at least one of download_mbps or upload_mbps > 0", prefix)
+	}
+}
+
+func (v *validator) validateACME(name string, svc *Service) {
+	acme := svc.ACME
+	if acme == nil {
+		return
+	}
+
+	if acme.Email == "" {
+		v.addIssue("service %q: acme.email is required", name)
+	}
+
+	switch acme.Challenge {
+	case "", "alpn", "http", "dns":
+		// Valid.
+	default:
+		v.addIssue("service %q: acme.challenge %q is invalid (expected \"alpn\", \"http\", or \"dns\")", name, acme.Challenge)
+	}
+
+	if acme.Challenge == "dns" {
+		if acme.DNS == nil {
+			v.addIssue("service %q: acme.dns is required when challenge is \"dns\"", name)
+		} else {
+			if acme.DNS.Provider == "" {
+				v.addIssue("service %q: acme.dns.provider is required", name)
+			} else {
+				validProviders := map[string]bool{"cloudflare": true}
+				if !validProviders[acme.DNS.Provider] {
+					v.addIssue("service %q: acme.dns.provider %q is not supported (available: \"cloudflare\")", name, acme.DNS.Provider)
+				}
+			}
+		}
+	}
+
+	if acme.CA != "" && len(acme.CAs) > 0 {
+		v.addIssue("service %q: acme.ca and acme.cas are mutually exclusive", name)
+	}
+
+	// Wildcard domains require DNS challenge.
+	for _, d := range acme.Domains {
+		if strings.Contains(d, "*") && acme.Challenge != "dns" {
+			v.addIssue("service %q: wildcard domain %q requires challenge \"dns\"", name, d)
+		}
 	}
 }
 

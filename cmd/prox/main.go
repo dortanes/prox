@@ -142,7 +142,7 @@ func runServe(args []string) int {
 		"files", len(result.Paths),
 	)
 
-	group, err := server.Build(cfg)
+	group, err := server.Build(cfg, result.ConfigDir)
 	if err != nil {
 		slog.Error("server build failed", "err", err)
 		return 1

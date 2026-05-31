@@ -42,6 +42,7 @@ type Service struct {
 	TLS     bool          `json:"tls"`
 	TLSCert string        `json:"tls_cert,omitempty"`
 	TLSKey  string        `json:"tls_key,omitempty"`
+	ACME    *ACMEConfig   `json:"acme,omitempty"`
 	H2      *bool         `json:"h2,omitempty"` // Enable HTTP/2 on TLS listener (default: true). Set to false for WebSocket support.
 	Config  *ServerConfig `json:"config,omitempty"`
 	Plugins []string      `json:"plugins,omitempty"`
@@ -97,6 +98,48 @@ type SpeedConfig struct {
 	DownloadMbps float64 `json:"download_mbps,omitempty"` // upstream→client limit in Mbps (0 = unlimited)
 	UploadMbps   float64 `json:"upload_mbps,omitempty"`   // client→upstream limit in Mbps (0 = unlimited)
 	Shared       bool    `json:"shared,omitempty"`         // share bandwidth across all connections
+}
+
+// ACMEConfig controls automatic certificate issuance via ACME (e.g., Let's Encrypt).
+type ACMEConfig struct {
+	// Email for the ACME account (used for certificate expiration notices).
+	Email string `json:"email"`
+
+	// CA directory URL. Defaults to Let's Encrypt production.
+	// Shorthand values: "staging" → Let's Encrypt staging,
+	//                   "zerossl" → ZeroSSL production.
+	CA string `json:"ca,omitempty"`
+
+	// CAs defines fallback certificate authorities, tried in order.
+	// When set, CA is ignored and CAs takes precedence.
+	CAs []string `json:"cas,omitempty"`
+
+	// Challenge type: "alpn" (TLS-ALPN-01, default), "http" (HTTP-01),
+	// or "dns" (DNS-01, required for wildcards).
+	Challenge string `json:"challenge,omitempty"`
+
+	// DNS configures the DNS-01 challenge provider.
+	// Required when challenge is "dns".
+	DNS *ACMEDNSConfig `json:"dns,omitempty"`
+
+	// Storage path for certificates and ACME account data.
+	// Default: "acme/" directory next to the config file.
+	Storage string `json:"storage,omitempty"`
+
+	// Domains to manage. If empty, domains are auto-discovered
+	// from route match.domain patterns in this service.
+	Domains []string `json:"domains,omitempty"`
+}
+
+// ACMEDNSConfig configures the DNS provider for DNS-01 challenges.
+type ACMEDNSConfig struct {
+	// Provider name: "cloudflare".
+	Provider string `json:"provider"`
+
+	// Token is the API token for the DNS provider.
+	// If empty, read from the provider's environment variable:
+	//   cloudflare → CF_DNS_API_TOKEN
+	Token string `json:"token,omitempty"`
 }
 
 // Route binds a request matcher to an action — either by name or inline.

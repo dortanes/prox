@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/dortanes/prox/internal/action"
+	proxacme "github.com/dortanes/prox/internal/acme"
 	bal "github.com/dortanes/prox/internal/balancer"
 	"github.com/dortanes/prox/internal/config"
 	"github.com/dortanes/prox/internal/dispatcher"
@@ -43,6 +44,7 @@ type Group struct {
 	servers  []*managedServer
 	handlers map[string]*swappableHandler // keyed by service name
 	plugins  *plugin.Manager              // nil when no plugins configured
+	cfg      *config.Config               // stored for ACME domain discovery
 }
 
 type managedServer struct {
@@ -50,13 +52,16 @@ type managedServer struct {
 	server   *http.Server
 	servers  []*http.Server         // parallel HTTP servers for SO_REUSEPORT
 	dispatch *dispatcher.Dispatcher // non-nil when service has "pass" routes
+	acme     *proxacme.Manager      // non-nil when ACME is configured
 	rawLn    net.Listener           // raw TCP listener
 	rawLns   []net.Listener         // parallel raw TCP listeners for SO_REUSEPORT
 	maxConns int                    // max concurrent connections (0 = unlimited)
 }
 
 // Build creates a server group from the loaded configuration.
-func Build(cfg *config.Config) (*Group, error) {
+// configDir is the directory containing the config file, used for resolving
+// relative paths (e.g., ACME certificate storage).
+func Build(cfg *config.Config, configDir string) (*Group, error) {
 	resolver := resource.NewResolver(cfg.Resources)
 
 	hints := buildRouteHints(cfg)
@@ -110,13 +115,15 @@ func Build(cfg *config.Config) (*Group, error) {
 			return nil, fmt.Errorf("building actions for service %q: %w", name, err)
 		}
 
-		srv, handler, err := buildServer(name, svc, cfg, svcRegistry, rt, g.plugins)
+		srv, handler, err := buildServer(name, svc, cfg, svcRegistry, rt, g.plugins, configDir)
 		if err != nil {
 			return nil, fmt.Errorf("building service %q: %w", name, err)
 		}
 		g.servers = append(g.servers, srv)
 		g.handlers[name] = handler
 	}
+
+	g.cfg = cfg
 
 	return g, nil
 }
@@ -184,6 +191,28 @@ func (g *Group) Reload(cfg *config.Config) error {
 		slog.Debug("service reloaded", "service", name)
 	}
 
+	// Update ACME domain management if routes changed.
+	for _, ms := range g.servers {
+		if ms.acme == nil {
+			continue
+		}
+		svc, ok := cfg.Services[ms.name]
+		if !ok {
+			continue
+		}
+
+		newDomains := extractDomains(svc.Routes)
+		current := ms.acme.ManagedDomains()
+		if !slicesEqual(current, newDomains) {
+			if err := ms.acme.ManageDomains(context.Background(), newDomains); err != nil {
+				slog.Error("acme: domain update failed after reload",
+					"service", ms.name,
+					"err", err,
+				)
+			}
+		}
+	}
+
 	// Reconfigure plugins.
 	bindings := buildPluginBindings(cfg, routeBalancers)
 	routeInfo := buildRouteInfo(cfg, routeBalancers)
@@ -213,7 +242,7 @@ func (g *Group) Reload(cfg *config.Config) error {
 	return nil
 }
 
-func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry, rt *router.Router, plugins *plugin.Manager) (*managedServer, *swappableHandler, error) {
+func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry, rt *router.Router, plugins *plugin.Manager, configDir string) (*managedServer, *swappableHandler, error) {
 	handler := newSwappableHandler(name, rt, registry, plugins)
 
 	// Resolve per-service timeouts, falling back to defaults.
@@ -255,12 +284,35 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 			},
 		}
 
-		certs, err := loadCertificates(svc.TLSCert, svc.TLSKey)
-		if err != nil {
-			return nil, nil, fmt.Errorf("loading TLS certificates: %w", err)
+		// Load manual certificates if configured.
+		if svc.TLSCert != "" {
+			certs, err := loadCertificates(svc.TLSCert, svc.TLSKey)
+			if err != nil {
+				return nil, nil, fmt.Errorf("loading TLS certificates: %w", err)
+			}
+			tlsCfg.Certificates = certs
+			slog.Debug("loaded TLS certificates",
+				"service", name,
+				"count", len(certs),
+			)
 		}
 
-		tlsCfg.Certificates = certs
+		// Wire up ACME if configured.
+		if svc.ACME != nil {
+			acmeMgr, err := proxacme.New(svc.ACME, configDir)
+			if err != nil {
+				return nil, nil, fmt.Errorf("initializing ACME: %w", err)
+			}
+
+			// Go's tls.Config checks Certificates first (by SNI), then calls
+			// GetCertificate for any unmatched domains. This gives us
+			// manual-first-then-ACME fallback for free.
+			tlsCfg.GetCertificate = acmeMgr.GetCertificate
+			ms.acme = acmeMgr
+
+			slog.Debug("ACME enabled", "service", name)
+		}
+
 		srv.TLSConfig = tlsCfg
 
 		// Disable HTTP/2 when explicitly configured (h2: false).
@@ -273,11 +325,6 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 				"service", name,
 			)
 		}
-
-		slog.Debug("loaded TLS certificates",
-			"service", name,
-			"count", len(certs),
-		)
 	}
 
 	// Check if this service has any "pass" routes — if so, build a dispatcher.
@@ -476,6 +523,9 @@ func (g *Group) ListenAndServe(ctx context.Context) error {
 		}
 	}
 
+	// Start ACME certificate management.
+	g.startACME(ctx, g.cfg)
+
 	errCh := make(chan error, len(g.servers))
 
 	for _, ms := range g.servers {
@@ -504,6 +554,92 @@ func (g *Group) ListenAndServe(ctx context.Context) error {
 	}
 }
 
+// startACME begins certificate management for all ACME-enabled services.
+// Domains are auto-discovered from routes if not explicitly configured.
+func (g *Group) startACME(ctx context.Context, cfg *config.Config) {
+	for _, ms := range g.servers {
+		if ms.acme == nil {
+			continue
+		}
+
+		domains := ms.acme.ManagedDomains()
+		if len(domains) == 0 {
+			// Auto-discover domains from routes.
+			if svc, ok := cfg.Services[ms.name]; ok {
+				domains = extractDomains(svc.Routes)
+			}
+		}
+
+		if len(domains) == 0 {
+			slog.Warn("acme: no domains to manage", "service", ms.name)
+			continue
+		}
+
+		if err := ms.acme.ManageDomains(ctx, domains); err != nil {
+			slog.Error("acme: failed to manage domains",
+				"service", ms.name,
+				"domains", domains,
+				"err", err,
+			)
+		}
+	}
+}
+
+// extractDomains collects domain names from route match patterns for ACME.
+// Exact domains are included directly. Wildcard patterns like "*.example.com"
+// are included for DNS-01 challenges. Partial wildcards (e.g., "cdn-*.example.com")
+// and glob patterns ("**") are skipped — ACME cannot handle them.
+func extractDomains(routes []*config.Route) []string {
+	seen := make(map[string]bool)
+	var domains []string
+	for _, r := range routes {
+		if r.Match == nil || r.Match.Domain == "" {
+			continue
+		}
+		d := r.Match.Domain
+		// Skip glob patterns.
+		if strings.Contains(d, "**") {
+			continue
+		}
+		// Allow "*.example.com" (full wildcard) for DNS-01.
+		// Skip partial wildcards like "cdn-*.example.com".
+		parts := strings.Split(d, ".")
+		skip := false
+		for _, p := range parts {
+			if strings.Contains(p, "*") && p != "*" {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		if !seen[d] {
+			seen[d] = true
+			domains = append(domains, d)
+		}
+	}
+	return domains
+}
+
+// slicesEqual reports whether two string slices contain the same elements,
+// regardless of order.
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	m := make(map[string]int, len(a))
+	for _, s := range a {
+		m[s]++
+	}
+	for _, s := range b {
+		m[s]--
+		if m[s] < 0 {
+			return false
+		}
+	}
+	return true
+}
 
 // serveDirect starts an HTTP/HTTPS server without L4 dispatching (original path).
 // Spawns multiple parallel SO_REUSEPORT listeners and workers to bypass Go's
@@ -697,6 +833,11 @@ func (g *Group) shutdown() {
 			if ms.dispatch != nil {
 				ms.dispatch.Close()
 				ms.dispatch.Wait()
+			}
+
+			// Stop ACME certificate manager.
+			if ms.acme != nil {
+				ms.acme.Close()
 			}
 		}(ms)
 	}
