@@ -246,8 +246,9 @@ Named, reusable content blobs referenced by actions via `body_ref`.
 | ------ | ------ | -------------------------------------------- |
 | `text` | string | Raw text content                             |
 | `json` | any    | JSON value — auto-marshaled to a JSON string |
+| `file` | string | File path to read content from               |
 
-Use `text` for plain strings, `json` for structured data (avoids manual escaping).
+Use `text` for plain strings, `json` for structured data (avoids manual escaping), and `file` to load content from disk.
 
 ```json5
 {
