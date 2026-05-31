@@ -4,6 +4,7 @@ package resource
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/dortanes/prox/internal/config"
 )
@@ -30,6 +31,10 @@ func (r *Resolver) Resolve(name string) ([]byte, error) {
 
 	if res.Text != "" {
 		return []byte(res.Text), nil
+	}
+
+	if res.File != "" {
+		return os.ReadFile(res.File)
 	}
 
 	if res.JSON != nil {

@@ -243,6 +243,7 @@ type Action struct {
 type Resource struct {
 	Text string `json:"text,omitempty"`
 	JSON any    `json:"json,omitempty"`
+	File string `json:"file,omitempty"`
 }
 
 // ActionRef holds either a string reference to a named action or an inline action object.
