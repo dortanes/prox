@@ -190,3 +190,31 @@ func TestBuild_Registry(t *testing.T) {
 		t.Error("expected nil for nonexistent action")
 	}
 }
+
+func TestProxy_FlushIntervalDisablesFastPath(t *testing.T) {
+	act := &config.Action{
+		Type:     config.ActionTypeProxy,
+		Upstream: "localhost:3000",
+	}
+
+	// 1. Without custom flush interval: fast path should be enabled.
+	p1, err := NewProxy(act, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p1.fast == nil {
+		t.Error("expected fast path to be enabled when flush interval is not configured")
+	}
+
+	// 2. With custom flush interval: fast path should be disabled.
+	svcCfg := &config.ServerConfig{
+		FlushInterval: config.Duration{Duration: -1},
+	}
+	p2, err := NewProxy(act, svcCfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p2.fast != nil {
+		t.Error("expected fast path to be disabled when a custom flush interval is configured")
+	}
+}

@@ -158,8 +158,8 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 	p.proxy = proxy
 	p.target = target
 
-	// Enable fast path when no custom headers and no streaming.
-	if len(headers) == 0 && !act.Stream {
+	// Enable fast path when no custom headers, no streaming, and no custom flush interval.
+	if len(headers) == 0 && !act.Stream && flushInterval == 0 {
 		p.fast = &fastStaticProxy{
 			target:    target,
 			transport: transport,
