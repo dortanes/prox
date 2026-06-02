@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dortanes/prox/internal/config"
+	"github.com/labostack/prox/internal/config"
 )
 
 // --- Response types ---

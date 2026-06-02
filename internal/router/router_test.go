@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dortanes/prox/internal/config"
+	"github.com/labostack/prox/internal/config"
 )
 
 func TestRouter_ExactMatch(t *testing.T) {

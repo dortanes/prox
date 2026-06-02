@@ -6,7 +6,7 @@ Thanks for your interest in contributing!
 
 ```bash
 # Clone
-git clone https://github.com/dortanes/prox.git
+git clone https://github.com/labostack/prox.git
 cd prox
 
 # Build
@@ -40,6 +40,7 @@ make cover
 ## Reporting Bugs
 
 Open an issue with:
+
 - prox version (`prox version`)
 - Your config (redacted if sensitive)
 - Expected vs actual behavior
@@ -76,4 +77,3 @@ prox/
 ├── Makefile
 └── go.mod
 ```
-

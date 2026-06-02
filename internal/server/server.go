@@ -21,16 +21,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dortanes/prox/internal/action"
-	proxacme "github.com/dortanes/prox/internal/acme"
-	bal "github.com/dortanes/prox/internal/balancer"
-	"github.com/dortanes/prox/internal/config"
-	"github.com/dortanes/prox/internal/dispatcher"
-	"github.com/dortanes/prox/internal/logger"
-	"github.com/dortanes/prox/internal/plugin"
-	"github.com/dortanes/prox/internal/resource"
-	"github.com/dortanes/prox/internal/router"
-	"github.com/dortanes/prox/internal/throttle"
+	"github.com/labostack/prox/internal/action"
+	proxacme "github.com/labostack/prox/internal/acme"
+	bal "github.com/labostack/prox/internal/balancer"
+	"github.com/labostack/prox/internal/config"
+	"github.com/labostack/prox/internal/dispatcher"
+	"github.com/labostack/prox/internal/logger"
+	"github.com/labostack/prox/internal/plugin"
+	"github.com/labostack/prox/internal/resource"
+	"github.com/labostack/prox/internal/router"
+	"github.com/labostack/prox/internal/throttle"
 )
 
 const (

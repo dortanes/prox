@@ -1,8 +1,8 @@
 site_name: prox
-site_url: https://dortanes.github.io/prox
+site_url: https://labostack.github.io/prox
 site_description: Modular reverse proxy with config-driven routing, load balancing, L4/L7 dispatching, and plugin middleware.
-repo_url: https://github.com/dortanes/prox
-repo_name: dortanes/prox
+repo_url: https://github.com/labostack/prox
+repo_name: labostack/prox
 edit_uri: edit/main/docs/
 
 theme:
@@ -43,18 +43,18 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Configuration:
-    - Overview: configuration/index.md
-    - Routing: configuration/routing.md
-    - Actions: configuration/actions.md
-    - Load Balancing: configuration/load-balancing.md
-    - Speed Limiting: configuration/speed-limiting.md
-    - Logging: configuration/logging.md
+      - Overview: configuration/index.md
+      - Routing: configuration/routing.md
+      - Actions: configuration/actions.md
+      - Load Balancing: configuration/load-balancing.md
+      - Speed Limiting: configuration/speed-limiting.md
+      - Logging: configuration/logging.md
   - Admin API: admin-api.md
   - TLS & Certificates: tls.md
   - Plugins:
-    - Overview: plugins/index.md
-    - Go SDK: plugins/sdk.md
-    - Wire Protocol: plugins/protocol.md
+      - Overview: plugins/index.md
+      - Go SDK: plugins/sdk.md
+      - Wire Protocol: plugins/protocol.md
   - Deployment: deployment.md
 
 markdown_extensions:
@@ -84,4 +84,4 @@ plugins:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/dortanes/prox
+      link: https://github.com/labostack/prox

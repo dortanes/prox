@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/dortanes/prox/internal/config"
-	"github.com/dortanes/prox/internal/resource"
+	"github.com/labostack/prox/internal/config"
+	"github.com/labostack/prox/internal/resource"
 )
 
 // Registry maps action names to their http.Handler implementations.

@@ -18,12 +18,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dortanes/prox/internal/admin"
-	"github.com/dortanes/prox/internal/config"
-	"github.com/dortanes/prox/internal/logger"
-	"github.com/dortanes/prox/internal/plugin"
-	"github.com/dortanes/prox/internal/server"
-	"github.com/dortanes/prox/internal/watcher"
+	"github.com/labostack/prox/internal/admin"
+	"github.com/labostack/prox/internal/config"
+	"github.com/labostack/prox/internal/logger"
+	"github.com/labostack/prox/internal/plugin"
+	"github.com/labostack/prox/internal/server"
+	"github.com/labostack/prox/internal/watcher"
 )
 
 var version = "dev"

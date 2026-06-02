@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/dortanes/prox/internal/config"
+	"github.com/labostack/prox/internal/config"
 )
 
 // DiscoverDomains fetches all active zones from the DNS provider account

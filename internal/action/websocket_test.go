@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dortanes/prox/internal/config"
+	"github.com/labostack/prox/internal/config"
 )
 
 func TestIsWebSocketUpgrade(t *testing.T) {

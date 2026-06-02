@@ -1,11 +1,11 @@
 # Go SDK
 
-The Go SDK (`github.com/dortanes/prox/sdk`) provides a callback-based API for building plugins. It handles all transport details — stdin/stdout JSON messaging, Unix socket msgpack framing, and the `ready` handshake.
+The Go SDK (`github.com/labostack/prox/sdk`) provides a callback-based API for building plugins. It handles all transport details — stdin/stdout JSON messaging, Unix socket msgpack framing, and the `ready` handshake.
 
 ## Installation
 
 ```bash
-go get github.com/dortanes/prox/sdk
+go get github.com/labostack/prox/sdk
 ```
 
 ## Quick Start
@@ -15,7 +15,7 @@ go get github.com/dortanes/prox/sdk
 ```go
 package main
 
-import "github.com/dortanes/prox/sdk"
+import "github.com/labostack/prox/sdk"
 
 func main() {
     p := sdk.New()
@@ -37,7 +37,7 @@ func main() {
 ```go
 package main
 
-import "github.com/dortanes/prox/sdk"
+import "github.com/labostack/prox/sdk"
 
 func main() {
     p := sdk.New()
@@ -61,11 +61,11 @@ Called when the plugin receives route configuration (on startup and reload).
 
 **Route fields:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `ID` | `string` | Stable identifier (`service:routeIndex`) |
-| `Domain` | `string` | Domain pattern from config |
-| `Path` | `string` | Path pattern from config |
+| Field    | Type     | Description                              |
+| -------- | -------- | ---------------------------------------- |
+| `ID`     | `string` | Stable identifier (`service:routeIndex`) |
+| `Domain` | `string` | Domain pattern from config               |
+| `Path`   | `string` | Path pattern from config                 |
 
 ### `OnRequest(func(req *Request) *Response)` — L7
 
@@ -126,41 +126,41 @@ p.OnDisconnect(func(event *sdk.DisconnectEvent) {
 
 **DisconnectEvent fields:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `RouteID` | `string` | Route identifier (`service:routeIndex`) |
-| `Target` | `string` | Backend target host (SNI/domain) |
-| `RemoteAddr` | `string` | Client IP:port |
-| `BytesRx` | `int64` | Bytes received from client (upload) |
-| `BytesTx` | `int64` | Bytes transmitted to client (download) |
-| `DurationMs` | `int64` | Connection duration in milliseconds |
+| Field        | Type     | Description                             |
+| ------------ | -------- | --------------------------------------- |
+| `RouteID`    | `string` | Route identifier (`service:routeIndex`) |
+| `Target`     | `string` | Backend target host (SNI/domain)        |
+| `RemoteAddr` | `string` | Client IP:port                          |
+| `BytesRx`    | `int64`  | Bytes received from client (upload)     |
+| `BytesTx`    | `int64`  | Bytes transmitted to client (download)  |
+| `DurationMs` | `int64`  | Connection duration in milliseconds     |
 
 ## Request Fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `RouteID` | `string` | Route identifier (`service:routeIndex`) |
-| `Method` | `string` | HTTP method (`GET`, `POST`, etc.) |
-| `Path` | `string` | Request path (`/api/users`) |
-| `Query` | `string` | Raw query string (`foo=bar&baz=1`) |
-| `Domain` | `string` | Request host without port |
-| `Host` | `string` | Full Host header including port |
-| `Proto` | `string` | HTTP protocol (`HTTP/1.1`, `HTTP/2.0`) |
-| `RemoteAddr` | `string` | Client IP:port |
-| `ContentLength` | `int64` | Request body size (`-1` if unknown) |
-| `Headers` | `map[string]string` | All request headers (first value only) |
-| `Body` | `[]byte` | Request body (capped at 64KB) |
-| `MatchDomain` | `string` | Captured `*` wildcard value(s) |
-| `MatchGlob` | `string` | Captured `**` glob suffix |
-| `MatchPath` | `string` | Path pattern from config |
-| `Vars` | `map[string]string` | Route-level `set` variables |
-| `Target` | `string` | Backend target selected by balancer |
+| Field           | Type                | Description                             |
+| --------------- | ------------------- | --------------------------------------- |
+| `RouteID`       | `string`            | Route identifier (`service:routeIndex`) |
+| `Method`        | `string`            | HTTP method (`GET`, `POST`, etc.)       |
+| `Path`          | `string`            | Request path (`/api/users`)             |
+| `Query`         | `string`            | Raw query string (`foo=bar&baz=1`)      |
+| `Domain`        | `string`            | Request host without port               |
+| `Host`          | `string`            | Full Host header including port         |
+| `Proto`         | `string`            | HTTP protocol (`HTTP/1.1`, `HTTP/2.0`)  |
+| `RemoteAddr`    | `string`            | Client IP:port                          |
+| `ContentLength` | `int64`             | Request body size (`-1` if unknown)     |
+| `Headers`       | `map[string]string` | All request headers (first value only)  |
+| `Body`          | `[]byte`            | Request body (capped at 64KB)           |
+| `MatchDomain`   | `string`            | Captured `*` wildcard value(s)          |
+| `MatchGlob`     | `string`            | Captured `**` glob suffix               |
+| `MatchPath`     | `string`            | Path pattern from config                |
+| `Vars`          | `map[string]string` | Route-level `set` variables             |
+| `Target`        | `string`            | Backend target selected by balancer     |
 
 ### Helper Methods
 
-| Method | Description |
-|--------|-------------|
-| `req.Header(key)` | Returns the value of a request header |
+| Method                | Description                            |
+| --------------------- | -------------------------------------- |
+| `req.Header(key)`     | Returns the value of a request header  |
 | `req.QueryParam(key)` | Returns the value of a query parameter |
 
 ## Response Helpers
@@ -253,11 +253,11 @@ When multiple limits apply (config, push, response), the most restrictive value 
 
 ### Method Reference
 
-| Method | Description |
-|--------|-------------|
-| `SetTargets(routeID, targets)` | Push flat targets for a specific route (or `"*"` for all) |
-| `SetGroupedTargets(routeID, groups)` | Push grouped targets for a specific route (or `"*"` for all) |
-| `SetActionTargets(action, targets)` | Push flat targets for all routes using the given action |
-| `SetActionGroupedTargets(action, groups)` | Push grouped targets for all routes using the given action |
-| `SetSpeedLimit(routeID, limit)` | Push speed limit for a specific route (or `"*"` for all) |
-| `SetActionSpeedLimit(action, limit)` | Push speed limit for all routes using the given action |
+| Method                                    | Description                                                  |
+| ----------------------------------------- | ------------------------------------------------------------ |
+| `SetTargets(routeID, targets)`            | Push flat targets for a specific route (or `"*"` for all)    |
+| `SetGroupedTargets(routeID, groups)`      | Push grouped targets for a specific route (or `"*"` for all) |
+| `SetActionTargets(action, targets)`       | Push flat targets for all routes using the given action      |
+| `SetActionGroupedTargets(action, groups)` | Push grouped targets for all routes using the given action   |
+| `SetSpeedLimit(routeID, limit)`           | Push speed limit for a specific route (or `"*"` for all)     |
+| `SetActionSpeedLimit(action, limit)`      | Push speed limit for all routes using the given action       |

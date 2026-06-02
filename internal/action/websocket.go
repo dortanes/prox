@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dortanes/prox/internal/throttle"
+	"github.com/labostack/prox/internal/throttle"
 )
 
 // isWebSocketUpgrade returns true if the request is a WebSocket upgrade.

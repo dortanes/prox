@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dortanes/prox/internal/config"
-	"github.com/dortanes/prox/internal/logger"
-	"github.com/dortanes/prox/internal/server"
+	"github.com/labostack/prox/internal/config"
+	"github.com/labostack/prox/internal/logger"
+	"github.com/labostack/prox/internal/server"
 )
 
 // startProx loads a config, builds the server group, and starts it.

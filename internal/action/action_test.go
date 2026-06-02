@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/dortanes/prox/internal/config"
-	"github.com/dortanes/prox/internal/resource"
+	"github.com/labostack/prox/internal/config"
+	"github.com/labostack/prox/internal/resource"
 )
 
 func TestStatic_BasicResponse(t *testing.T) {

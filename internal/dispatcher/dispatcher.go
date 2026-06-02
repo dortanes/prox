@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dortanes/prox/internal/balancer"
-	"github.com/dortanes/prox/internal/plugin"
+	"github.com/labostack/prox/internal/balancer"
+	"github.com/labostack/prox/internal/plugin"
 )
 
 const (

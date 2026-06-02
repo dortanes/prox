@@ -10,7 +10,7 @@ Run prox with Docker Compose:
 # docker-compose.yml
 services:
   prox:
-    image: ghcr.io/dortanes/prox:latest
+    image: ghcr.io/labostack/prox:latest
     ports:
       - "443:443"
       - "8080:8080"
@@ -23,7 +23,7 @@ services:
 Standalone container:
 
 ```bash
-docker run -v ./config.json5:/etc/prox/config.json5 -p 8080:8080 ghcr.io/dortanes/prox
+docker run -v ./config.json5:/etc/prox/config.json5 -p 8080:8080 ghcr.io/labostack/prox
 ```
 
 ## Hot Reload
@@ -52,7 +52,7 @@ Client → :443 TCP
 ```
 
 !!! note
-    Without the dispatcher, `drop` routes operate at L7 — the connection hangs until timeout. When the dispatcher is active (due to `pass` routes), `drop` routes with domain patterns also participate in L4 matching, closing connections before the TLS handshake.
+Without the dispatcher, `drop` routes operate at L7 — the connection hangs until timeout. When the dispatcher is active (due to `pass` routes), `drop` routes with domain patterns also participate in L4 matching, closing connections before the TLS handshake.
 
 **Route order matters.** The dispatcher evaluates all routes — not just `pass` routes — in configuration order. The first domain match wins.
 

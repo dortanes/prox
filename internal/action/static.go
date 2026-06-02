@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/dortanes/prox/internal/config"
-	"github.com/dortanes/prox/internal/resource"
-	"github.com/dortanes/prox/internal/router"
+	"github.com/labostack/prox/internal/config"
+	"github.com/labostack/prox/internal/resource"
+	"github.com/labostack/prox/internal/router"
 )
 
 // Static returns a fixed response with pre-computed body, headers, and status.

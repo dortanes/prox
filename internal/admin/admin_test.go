@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dortanes/prox/internal/config"
+	"github.com/labostack/prox/internal/config"
 )
 
 // testDeps returns a Deps with sensible defaults for testing.

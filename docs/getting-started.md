@@ -7,13 +7,13 @@ Install prox, create a minimal configuration, and start proxying traffic.
 Install the latest release via `go install`:
 
 ```bash
-go install github.com/dortanes/prox/cmd/prox@latest
+go install github.com/labostack/prox/cmd/prox@latest
 ```
 
 To build from source:
 
 ```bash
-git clone https://github.com/dortanes/prox.git
+git clone https://github.com/labostack/prox.git
 cd prox
 go build -o prox ./cmd/prox
 ```

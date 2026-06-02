@@ -3,7 +3,7 @@ package acme
 import (
 	"github.com/caddyserver/certmagic"
 
-	"github.com/dortanes/prox/internal/config"
+	"github.com/labostack/prox/internal/config"
 )
 
 // buildIssuers creates CertMagic issuers from the ACME config.

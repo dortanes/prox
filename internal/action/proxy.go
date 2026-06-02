@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dortanes/prox/internal/config"
-	"github.com/dortanes/prox/internal/router"
+	"github.com/labostack/prox/internal/config"
+	"github.com/labostack/prox/internal/router"
 	"golang.org/x/net/http2"
 )
 

@@ -12,7 +12,7 @@ import (
 
 	"github.com/caddyserver/certmagic"
 
-	"github.com/dortanes/prox/internal/config"
+	"github.com/labostack/prox/internal/config"
 )
 
 // Manager wraps CertMagic to provide automatic certificate management.

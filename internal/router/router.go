@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dortanes/prox/internal/balancer"
-	"github.com/dortanes/prox/internal/config"
-	"github.com/dortanes/prox/internal/throttle"
+	"github.com/labostack/prox/internal/balancer"
+	"github.com/labostack/prox/internal/config"
+	"github.com/labostack/prox/internal/throttle"
 )
 
 // ctxKey is an unexported type for context keys to avoid collisions.
