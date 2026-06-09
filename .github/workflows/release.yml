@@ -37,6 +37,11 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
+      - name: Delete existing release
+        run: gh release delete "${{ github.ref_name }}" --cleanup-tag=false --yes || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
