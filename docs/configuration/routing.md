@@ -67,6 +67,19 @@ Domain patterns are also used for [L4 dispatching](../deployment.md#l4-dispatchi
 }
 ```
 
+## Multiple Path Patterns
+
+A single route can match multiple paths by listing them as a **comma-separated** string:
+
+```json5
+{
+  match: { domain: "app.example.com", path: "/assets/*, /api/*, /ws" },
+  action: { type: "proxy", upstream: "http://backend:3000" },
+}
+```
+
+The request matches if **any** of the listed patterns match (OR logic). Each pattern follows the same rules — exact match or wildcard prefix (`/api/*`). Whitespace around commas is trimmed.
+
 ## Inline Actions
 
 Instead of referencing a named action, an action definition may be inlined directly:
