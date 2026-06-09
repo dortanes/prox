@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.32.1)"
+        required: true
 
 permissions:
   contents: write
@@ -12,10 +17,13 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ env.RELEASE_TAG }}
 
       - uses: actions/setup-go@v5
         with:
@@ -38,7 +46,7 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Delete existing release
-        run: gh release delete "${{ github.ref_name }}" --cleanup-tag=false --yes || true
+        run: gh release delete "$RELEASE_TAG" --cleanup-tag=false --yes || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -49,3 +57,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}
