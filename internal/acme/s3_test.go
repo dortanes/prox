@@ -27,8 +27,8 @@ func TestNewS3Storage_Defaults(t *testing.T) {
 	if s.bucket != "test-bucket" {
 		t.Errorf("bucket = %q, want %q", s.bucket, "test-bucket")
 	}
-	if s.prefix != "acme/" {
-		t.Errorf("prefix = %q, want %q", s.prefix, "acme/")
+	if s.prefix != "" {
+		t.Errorf("prefix = %q, want empty (bucket root)", s.prefix)
 	}
 	if s.holderID == "" {
 		t.Error("holderID should not be empty")
@@ -173,6 +173,28 @@ func TestBuildStorage_DefaultFile(t *testing.T) {
 	}
 	if fs.Path != "/etc/prox/acme" {
 		t.Errorf("path = %q, want %q", fs.Path, "/etc/prox/acme")
+	}
+}
+
+func TestBuildStorage_S3DefaultPrefix(t *testing.T) {
+	cfg := &config.ACMEConfig{
+		Email:       "test@example.com",
+		StorageType: "s3",
+		S3: &config.ACMES3Config{
+			Bucket:    "my-certs",
+			AccessKey: "AKID",
+			SecretKey: "secret",
+		},
+	}
+
+	storage, err := buildStorage(cfg, "/etc/prox")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	s3s := storage.(*S3Storage)
+	if s3s.prefix != "" {
+		t.Errorf("default prefix = %q, want empty (bucket root)", s3s.prefix)
 	}
 }
 

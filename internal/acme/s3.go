@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	mathrand "math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,11 @@ type S3Storage struct {
 	// mu protects heldLocks.
 	mu        sync.Mutex
 	heldLocks map[string]bool
+
+	// lockMu serializes lock acquisition attempts within the same process
+	// to avoid concurrent PutObject calls to the same lock key (prevents
+	// 429 rate limits on providers like Cloudflare R2).
+	lockMu sync.Mutex
 }
 
 // Interface guards.
@@ -96,11 +102,8 @@ func NewS3Storage(cfg *config.ACMES3Config) (*S3Storage, error) {
 	client := s3.NewFromConfig(awsCfg, s3Opts...)
 
 	prefix := cfg.Prefix
-	if prefix == "" {
-		prefix = "acme/"
-	}
-	// Ensure prefix ends with "/".
-	if !strings.HasSuffix(prefix, "/") {
+	// Allow empty prefix (bucket root). Only normalize non-empty prefixes.
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
 
@@ -270,7 +273,15 @@ func (s *S3Storage) Stat(ctx context.Context, key string) (certmagic.KeyInfo, er
 
 // Lock acquires an advisory lock on a key using S3 objects.
 // It polls until the lock is acquired or the context is cancelled.
+// Lock acquisition is serialized within the same process to avoid
+// concurrent PutObject calls to the same key (prevents 429 rate limits).
 func (s *S3Storage) Lock(ctx context.Context, key string) error {
+	// Serialize lock attempts within this process to prevent thundering
+	// herd on S3 — multiple goroutines hitting PutObject for the same
+	// lock key simultaneously causes rate limiting on some providers.
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+
 	lk := s.lockKey(key)
 	start := time.Now()
 
@@ -293,11 +304,12 @@ func (s *S3Storage) Lock(ctx context.Context, key string) error {
 			return nil
 		}
 
-		// Wait before retrying.
+		// Wait before retrying with jitter to avoid synchronized retries.
+		jitter := time.Duration(mathrand.Int63n(int64(lockPollInterval / 2)))
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(lockPollInterval):
+		case <-time.After(lockPollInterval + jitter):
 		}
 	}
 }

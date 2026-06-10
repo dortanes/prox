@@ -105,7 +105,7 @@ With this configuration, prox automatically:
 | `s3.endpoint` | — | Custom endpoint for S3-compatible providers (MinIO, R2, Spaces) |
 | `s3.access_key` | — | Static access key. Falls back to AWS credential chain if empty |
 | `s3.secret_key` | — | Static secret key. Must be set together with `access_key` |
-| `s3.prefix` | `"acme/"` | Key prefix within the bucket |
+| `s3.prefix` | `""` (root) | Key prefix within the bucket |
 | `s3.use_path_style` | `false` | Force path-style URLs (required for MinIO) |
 | `domains` | *(auto)* | Explicit domain list. If empty, auto-discovered from routes |
 
@@ -354,7 +354,7 @@ acme: {
   storage_type: "s3",
   s3: {
     bucket: "my-certificates",
-    prefix: "prox/acme/",
+    prefix: "prox/acme/",  // optional, default is bucket root
   },
 }
 ```

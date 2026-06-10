@@ -182,8 +182,9 @@ type ACMES3Config struct {
 	AccessKey string `json:"access_key,omitempty"`
 	SecretKey string `json:"secret_key,omitempty"`
 
-	// Prefix is the key prefix within the bucket. Default: "acme/".
-	Prefix string `json:"prefix,omitempty"`
+	// Prefix is the key prefix within the bucket. Default: "" (bucket root).
+	// Set to e.g. "acme/" to store under a subdirectory.
+	Prefix string `json:"prefix"`
 
 	// UsePathStyle forces path-style addressing (required for MinIO and
 	// some S3-compatible providers that don't support virtual-hosted buckets).
