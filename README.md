@@ -56,7 +56,7 @@ Minimal configuration:
 - **Admin API** — optional REST API for [health checks, reload, and runtime inspection](https://labostack.github.io/prox/admin-api)
 - **WebSocket & HTTP/2** — transparent proxying with h2c upstream support
 - **TLS** — multi-cert SNI with directory-based certificate loading
-- **Automatic HTTPS** — ACME certificates via Let's Encrypt / ZeroSSL with [Cloudflare DNS](https://labostack.github.io/prox/tls) for wildcard support
+- **Automatic HTTPS** — ACME certificates via Let's Encrypt / ZeroSSL with [Cloudflare DNS](https://labostack.github.io/prox/tls) for wildcard support and S3-compatible storage for multi-server deployments
 
 ## Performance
 
