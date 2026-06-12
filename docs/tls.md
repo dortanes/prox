@@ -97,6 +97,7 @@ With this configuration, prox automatically:
 | `dns.provider` | *(required)* | DNS provider name: `"cloudflare"` |
 | `dns.token` | *(env var)* | API token. Falls back to provider env var if empty |
 | `dns.discover` | `false` | Fetch all zones from provider account and manage certificates automatically |
+| `dns.resolvers` | *(system)* | Custom DNS resolvers for zone detection and propagation checks (e.g., `["1.1.1.1:53", "8.8.8.8:53"]`) |
 | `storage_type` | `"file"` | Storage backend: `"file"` (local filesystem) or `"s3"` (S3-compatible) |
 | `storage` | `"acme/"` | Storage path for certificates and account data (file backend) |
 | `s3` | — | S3 storage config, required when `storage_type` is `"s3"` |
@@ -534,6 +535,17 @@ Synchronize the ACME storage directory using `rsync`, configuration management (
 **Rate limits**
 
 Let's Encrypt enforces rate limits on certificate issuance. If you hit a limit, issuance will fail with an error indicating the limit type. Use `ca: "staging"` for testing to avoid production rate limits.
+
+**DNS zone detection failures**
+
+In containerized environments (Docker, Kubernetes), ACME zone detection may fail with errors like `expected 1 zone, got 0`. This happens when the container's DNS resolver cannot properly return SOA records, causing certmagic to misidentify the DNS zone (e.g., detecting `xyz.` instead of `example.xyz`). Fix this by setting custom resolvers:
+
+```json5
+dns: {
+  provider: "cloudflare",
+  resolvers: ["1.1.1.1:53", "8.8.8.8:53"],
+}
+```
 
 **DNS propagation**
 
