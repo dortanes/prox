@@ -8,6 +8,7 @@ Actions define the behavior executed when a route matches. Actions can be refere
 | ---------- | ------ | -------- | -------------------------------------------------------- |
 | `type`     | string | ✓        | `"proxy"`                                                |
 | `upstream` | string | ✓        | `"host:port"`, `"http://host:port"`, or template         |
+| `rewrite`  | string |          | Replace the incoming request path entirely               |
 | `timeout`  | string |          | `"5s"`, `"30s"`, `"1m"`                                  |
 | `headers`  | object |          | Extra headers to send to upstream                        |
 | `fallback` | string |          | Named action to invoke when the primary action fails     |
@@ -17,6 +18,23 @@ Actions define the behavior executed when a route matches. Actions can be refere
 The upstream field supports template placeholders: `{target}` (from the route's [balancer](load-balancing.md)) and any key from the route's `set` field. For example, `"{target}:{port}"` resolves both the balancer target and a route-level variable.
 
 The `fallback` action is invoked when no balancer target is available or the upstream is unreachable, enabling graceful degradation without returning 502.
+
+### Path rewrite (`rewrite`)
+
+When `rewrite` is set, the incoming request path is replaced entirely with the specified value before forwarding to the upstream. The original path is discarded — no concatenation with the upstream path occurs.
+
+```json5
+{
+  match: { path: "/webhook" },
+  action: {
+    type: "proxy",
+    upstream: "https://backend.internal",
+    rewrite: "/api/v2/hook",
+  },
+}
+```
+
+A request to `/webhook` is forwarded to `https://backend.internal/api/v2/hook`.
 
 ### Upstream protocol (`proto`)
 
