@@ -28,8 +28,9 @@ type Proxy struct {
 	fast   *fastStaticProxy       // fast path for static upstream without custom headers
 	target *url.URL               // static mode: fixed upstream URL
 
-	upstreamTpl   string           // dynamic mode template (empty for static)
-	stream        bool             // use raw HTTP tunnel for streaming
+	upstreamTpl string // dynamic mode template (empty for static)
+	stream      bool   // use raw HTTP tunnel for streaming
+	rewrite     string // when set, replaces the incoming request path entirely
 
 	headers  map[string]string
 	timeout  time.Duration
@@ -66,6 +67,7 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 		headers: headers,
 		timeout: timeout,
 		stream:  act.Stream,
+		rewrite: act.Rewrite,
 	}
 
 	// Dynamic mode: upstream contains template placeholders.
@@ -74,11 +76,16 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 
 		// Build a shared ReverseProxy that reads the target from request context.
 		headersRef := headers
+		rewritePath := act.Rewrite
 		proxy := &httputil.ReverseProxy{
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				target, _ := pr.In.Context().Value(dynTargetKey{}).(*url.URL)
 				if target != nil {
 					pr.SetURL(target)
+				}
+				if rewritePath != "" {
+					pr.Out.URL.Path = rewritePath
+					pr.Out.URL.RawPath = ""
 				}
 				pr.SetXForwarded()
 				for k, v := range headersRef {
@@ -120,9 +127,14 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 		return nil, err
 	}
 
+	rewritePath := act.Rewrite
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
+			if rewritePath != "" {
+				pr.Out.URL.Path = rewritePath
+				pr.Out.URL.RawPath = ""
+			}
 			pr.SetXForwarded()
 			for k, v := range headers {
 				if http.CanonicalHeaderKey(k) == "Host" {
@@ -159,8 +171,8 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 	p.proxy = proxy
 	p.target = target
 
-	// Enable fast path when no custom headers, no streaming, and no custom flush interval.
-	if len(headers) == 0 && !act.Stream && flushInterval == 0 {
+	// Enable fast path when no custom headers, no streaming, no custom flush interval, and no rewrite.
+	if len(headers) == 0 && !act.Stream && flushInterval == 0 && act.Rewrite == "" {
 		p.fast = &fastStaticProxy{
 			target:    target,
 			transport: transport,

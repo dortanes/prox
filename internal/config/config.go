@@ -264,6 +264,7 @@ type Action struct {
 
 	// Proxy-specific fields.
 	Upstream string   `json:"upstream,omitempty"`
+	Rewrite  string   `json:"rewrite,omitempty"` // Replace incoming request path with this value.
 	Timeout  Duration `json:"timeout,omitempty"`
 	Stream   bool     `json:"stream,omitempty"` // Use raw HTTP tunnel for bidirectional streaming.
 	Proto    string   `json:"proto,omitempty"`  // Upstream protocol: "" (auto), "h2" (HTTP/2 cleartext).

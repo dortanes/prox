@@ -218,3 +218,50 @@ func TestProxy_FlushIntervalDisablesFastPath(t *testing.T) {
 		t.Error("expected fast path to be disabled when a custom flush interval is configured")
 	}
 }
+
+func TestProxy_Rewrite(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Got-Path", r.URL.Path)
+		w.WriteHeader(200)
+	}))
+	defer upstream.Close()
+
+	act := &config.Action{
+		Type:     config.ActionTypeProxy,
+		Upstream: upstream.URL,
+		Rewrite:  "/internal/v2/handler",
+	}
+
+	handler, err := NewProxy(act, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/original", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Errorf("expected status 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Got-Path"); got != "/internal/v2/handler" {
+		t.Errorf("expected rewritten path '/internal/v2/handler', got %q", got)
+	}
+}
+
+func TestProxy_RewriteDisablesFastPath(t *testing.T) {
+	act := &config.Action{
+		Type:     config.ActionTypeProxy,
+		Upstream: "localhost:3000",
+		Rewrite:  "/rewritten",
+	}
+
+	p, err := NewProxy(act, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.fast != nil {
+		t.Error("expected fast path to be disabled when rewrite is configured")
+	}
+}
+
