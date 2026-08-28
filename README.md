@@ -4,7 +4,6 @@ A modular reverse proxy with config-driven routing, load balancing, L4/L7 dispat
 
 [![CI](https://github.com/labostack/prox/actions/workflows/ci.yml/badge.svg)](https://github.com/labostack/prox/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/labostack/prox.svg)](https://pkg.go.dev/github.com/labostack/prox)
-[![Go Report Card](https://goreportcard.com/badge/github.com/labostack/prox)](https://goreportcard.com/report/github.com/labostack/prox)
 [![Release](https://img.shields.io/github/v/release/labostack/prox?logo=github&color=blue)](https://github.com/labostack/prox/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
