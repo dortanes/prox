@@ -93,3 +93,38 @@ func TestAcceptConnWithoutGroup(t *testing.T) {
 		t.Fatalf("expected empty group, got %q", resp.Group)
 	}
 }
+
+func TestWithTarget(t *testing.T) {
+	resp := Allow(WithGroup("de"), WithTarget("de-2:8080"))
+	if !resp.Allow {
+		t.Fatal("Allow should be true")
+	}
+	if resp.Target != "de-2:8080" {
+		t.Fatalf("expected target %q, got %q", "de-2:8080", resp.Target)
+	}
+	if resp.Group != "de" {
+		t.Fatalf("expected group %q, got %q", "de", resp.Group)
+	}
+}
+
+func TestWithoutTarget(t *testing.T) {
+	if resp := Allow(); resp.Target != "" {
+		t.Fatalf("expected empty target, got %q", resp.Target)
+	}
+}
+
+func TestAcceptConnWithTarget(t *testing.T) {
+	resp := AcceptConn(WithConnTarget("de-2:443"))
+	if !resp.Allow {
+		t.Fatal("AcceptConn should allow")
+	}
+	if resp.Target != "de-2:443" {
+		t.Fatalf("expected target %q, got %q", "de-2:443", resp.Target)
+	}
+}
+
+func TestAcceptConnWithoutTarget(t *testing.T) {
+	if resp := AcceptConn(); resp.Target != "" {
+		t.Fatalf("expected empty target, got %q", resp.Target)
+	}
+}

@@ -358,6 +358,9 @@ func (m *Manager) OnRequest(ctx context.Context, routeID string, req *RequestInf
 		if result.Group != "" {
 			merged.Group = result.Group
 		}
+		if result.Target != "" {
+			merged.Target = result.Target
+		}
 	}
 
 	return merged, nil
@@ -419,6 +422,9 @@ func (m *Manager) OnConnect(ctx context.Context, routeID string, conn *ConnInfo)
 		}
 		if result.Group != "" {
 			merged.Group = result.Group
+		}
+		if result.Target != "" {
+			merged.Target = result.Target
 		}
 	}
 

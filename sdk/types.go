@@ -98,6 +98,7 @@ type Response struct {
 	CleanQuery  bool              `msgpack:"cq,omitempty" json:"clean_query,omitempty"`
 	RewritePath string            `msgpack:"rp,omitempty" json:"rewrite_path,omitempty"`
 	Group       string            `msgpack:"gr,omitempty" json:"group,omitempty"`
+	Target      string            `msgpack:"tg,omitempty" json:"target,omitempty"`
 }
 
 // UpstreamResponse carries upstream response context for on_response hooks.
@@ -124,8 +125,9 @@ type ConnRequest struct {
 
 // ConnResponse is the plugin's verdict for an on_connect hook.
 type ConnResponse struct {
-	Allow bool   `msgpack:"ok" json:"allow"`
-	Group string `msgpack:"gr,omitempty" json:"group,omitempty"`
+	Allow  bool   `msgpack:"ok" json:"allow"`
+	Group  string `msgpack:"gr,omitempty" json:"group,omitempty"`
+	Target string `msgpack:"tg,omitempty" json:"target,omitempty"`
 }
 
 // DisconnectEvent carries connection statistics for on_disconnect hooks.

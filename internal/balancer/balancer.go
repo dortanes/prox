@@ -55,6 +55,12 @@ func (rr *RoundRobin) Next() string {
 
 func (rr *RoundRobin) Done(string) {}
 
+// Take reports whether the target is in the pool. Round-robin keeps no
+// per-target state, so nothing is reserved.
+func (rr *RoundRobin) Take(target string) bool {
+	return contains(rr.pool.Load().targets, target)
+}
+
 func (rr *RoundRobin) SwapTargets(targets []string) {
 	rr.pool.Store(&rrPool{targets: targets})
 }
@@ -89,6 +95,12 @@ func (r *Random) Next() string {
 }
 
 func (r *Random) Done(string) {}
+
+// Take reports whether the target is in the pool. Random keeps no per-target
+// state, so nothing is reserved.
+func (r *Random) Take(target string) bool {
+	return contains(r.pool.Load().targets, target)
+}
 
 func (r *Random) SwapTargets(targets []string) {
 	r.pool.Store(&randPool{targets: targets})
@@ -164,6 +176,19 @@ func (lc *LeastConn) Done(target string) {
 	}
 }
 
+// Take reserves the named target, incrementing its connection counter exactly
+// as Next() would. Reports false when the target is not in the pool, in which
+// case nothing is reserved.
+func (lc *LeastConn) Take(target string) bool {
+	p := lc.pool.Load()
+	i, ok := p.index[target]
+	if !ok {
+		return false
+	}
+	p.conns[i].Add(1)
+	return true
+}
+
 // SwapTargets atomically replaces the target pool.
 // Active connection counts are reset to zero.
 func (lc *LeastConn) SwapTargets(targets []string) {
@@ -195,6 +220,15 @@ type KeyedBalancer interface {
 	Balancer
 	NextKeyed(key string) string
 	SwapGroupedTargets(groups map[string][]string)
+}
+
+// TargetTaker is implemented by balancers that can reserve one named target
+// instead of choosing one. It backs plugin-pinned targets: the accounting
+// mirrors Next(), so a later Done() stays balanced.
+type TargetTaker interface {
+	// Take reserves the target and reports whether it belongs to the pool.
+	// When it reports false nothing was reserved and Done() must not be called.
+	Take(target string) bool
 }
 
 // Grouped wraps a balancing strategy and provides per-key target pools.
@@ -280,6 +314,26 @@ func (g *Grouped) Done(target string) {
 	g.inner.Done(target)
 }
 
+// Take reserves the named target in the sub-pool that owns it, so a pinned
+// target is tracked by the same sub-balancer that would have selected it.
+// Falls back to the inner balancer in flat mode.
+func (g *Grouped) Take(target string) bool {
+	if gm := g.groups.Load(); gm != nil {
+		key, ok := gm.targetGroup[target]
+		if !ok {
+			return false
+		}
+		if tt, ok := gm.m[key].(TargetTaker); ok {
+			return tt.Take(target)
+		}
+		return true
+	}
+	if tt, ok := g.inner.(TargetTaker); ok {
+		return tt.Take(target)
+	}
+	return false
+}
+
 // SwapTargets replaces the flat target pool and clears any grouped state.
 func (g *Grouped) SwapTargets(targets []string) {
 	g.inner.SwapTargets(targets)
@@ -340,4 +394,13 @@ func newByStrategy(strategy string, targets []string) Balancer {
 	default:
 		return NewRoundRobin(targets)
 	}
+}
+
+func contains(targets []string, target string) bool {
+	for _, t := range targets {
+		if t == target {
+			return true
+		}
+	}
+	return false
 }

@@ -168,7 +168,7 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 
 		if route.IsPass {
 			// Plugin on_connect gate.
-			var pluginGroup string
+			var pluginGroup, pluginTarget string
 			if d.plugins != nil && d.plugins.HasHook(route.RouteID, plugin.HookOnConnect) {
 				matches, globTail := matchDomainCaptures(route.DomainSegments, route.DomainGlob, sniLower)
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -190,20 +190,36 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 					return
 				}
 				pluginGroup = res.Group
+				pluginTarget = res.Target
 			}
 
 			// Resolve upstream — static or balanced.
 			upstream := route.Upstream
 			var target string
+			var tracked bool
 			if route.Bal != nil && route.UpstreamTpl != "" {
-				var keyed bool
-				target, keyed = route.selectTarget(sniLower, pluginGroup)
-				if pluginGroup != "" && !keyed {
-					slog.Warn("l4 plugin group ignored: route has no keyed balancer",
-						"sni", sni,
-						"pattern", route.Domain,
-						"group", pluginGroup,
-					)
+				if pluginTarget != "" {
+					target = pluginTarget
+					tt, ok := route.Bal.(balancer.TargetTaker)
+					tracked = ok && tt.Take(target)
+					if !tracked {
+						slog.Warn("l4 plugin target not in balancer pool",
+							"sni", sni,
+							"pattern", route.Domain,
+							"target", pluginTarget,
+						)
+					}
+				} else {
+					var keyed bool
+					target, keyed = route.selectTarget(sniLower, pluginGroup)
+					tracked = target != ""
+					if pluginGroup != "" && !keyed {
+						slog.Warn("l4 plugin group ignored: route has no keyed balancer",
+							"sni", sni,
+							"pattern", route.Domain,
+							"group", pluginGroup,
+						)
+					}
 				}
 				if target == "" {
 					slog.Warn("l4 no target available",
@@ -227,7 +243,7 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 			d.relayPass(conn, buf, upstream)
 
 			// Signal the balancer after relay completes.
-			if route.Bal != nil && target != "" {
+			if route.Bal != nil && tracked && target != "" {
 				route.Bal.Done(target)
 			}
 			return

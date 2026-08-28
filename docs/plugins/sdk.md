@@ -179,6 +179,7 @@ sdk.WithSpeedLimit(down, up, groupKey)// Grouped bandwidth cap (shared by connec
 sdk.WithCleanQuery()                  // Remove query string from upstream request
 sdk.WithRewritePath(path)             // Override upstream request path
 sdk.WithGroup(group)                  // Pick the balancer target from a named group
+sdk.WithTarget(target)                // Pin one exact target (wins over WithGroup)
 ```
 
 ### Response Modifications
@@ -199,6 +200,7 @@ sdk.AcceptConn()                      // Allow TCP connection
 sdk.RejectConn()                      // Close TCP connection
 
 sdk.WithConnGroup(group)              // Pick the balancer target from a named group
+sdk.WithConnTarget(target)            // Pin one exact target (wins over WithConnGroup)
 ```
 
 ## Push API
@@ -257,6 +259,36 @@ p.OnConnect(func(conn *sdk.ConnRequest) *sdk.ConnResponse {
 ```
 
 Here the target is chosen after the hook returns, so nothing needs releasing. A group with no available target closes the connection — L4 has no fallback action.
+
+#### Per-Request Target Pinning
+
+`sdk.WithGroup` narrows the choice to a pool; `sdk.WithTarget` removes the choice entirely and names the upstream to use. It takes precedence over `sdk.WithGroup`, and the address may be any target the plugin has published — a member of any group, not only the one the domain resolves to:
+
+```go
+p.SetGroupedTargets("*", map[string][]string{
+    "de": {"de-1:8080", "de-2:8080"},
+    "us": {"us-1:8080"},
+})
+
+p.OnRequest(func(req *sdk.Request) *sdk.Response {
+    if pinned := sessionServer(req.Header("Cookie")); pinned != "" {
+        return sdk.Allow(sdk.WithTarget(pinned))   // e.g. "de-2:8080"
+    }
+    return sdk.Allow(sdk.WithGroup("de"))
+})
+```
+
+A pinned target that belongs to the balancer is reserved in the sub-pool that owns it, so `leastconn` counts it like any other request and releases it when the request finishes. A target outside every pool is still used — the plugin is trusted — but no strategy can account for it, so prox logs a warning. Either way the target picked during route matching is released first.
+
+L4 `pass` routes use `sdk.WithConnTarget` with the same precedence and the same pool lookup:
+
+```go
+p.OnConnect(func(conn *sdk.ConnRequest) *sdk.ConnResponse {
+    return sdk.AcceptConn(sdk.WithConnTarget("de-2:443"))
+})
+```
+
+Routes whose upstream has no `{target}` placeholder ignore a pinned target, exactly as they ignore a group.
 
 ### Speed Limiting
 

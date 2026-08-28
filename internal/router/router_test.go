@@ -1021,3 +1021,121 @@ func TestMatchResult_SelectGroupNoBalancer(t *testing.T) {
 		t.Fatalf("expected no selection without a balancer, got %q keyed=%v", target, keyed)
 	}
 }
+
+func TestMatchResult_SelectTarget(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:    &config.Match{Domain: "*.example.com"},
+			Balancer: &config.BalancerConfig{Type: config.BalancerLeastConn},
+			Action:   config.ActionRef{Name: "proxy_backend"},
+		},
+	})
+
+	grouped := balancer.NewGrouped(string(config.BalancerLeastConn), rt.RouteBalancer(0))
+	grouped.SwapGroupedTargets(map[string][]string{
+		"de": {"de-1:8080", "de-2:8080"},
+		"us": {"us-1:8080"},
+	})
+	rt.SetRouteBalancer(0, grouped)
+
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Host = "de.example.com"
+	r, _ = rt.Match(r)
+	mr := GetMatchResult(r)
+	if mr.Target != "de-1:8080" {
+		t.Fatalf("expected domain capture to select de-1:8080, got %q", mr.Target)
+	}
+
+	if !mr.SelectTarget("de-2:8080") {
+		t.Fatal("expected a pool member to be tracked")
+	}
+	if mr.Target != "de-2:8080" {
+		t.Fatalf("expected de-2:8080, got %q", mr.Target)
+	}
+
+	// de-1 was released and de-2 reserved, so the idle target is de-1 again.
+	if got := grouped.NextKeyed("de"); got != "de-1:8080" {
+		t.Fatalf("expected de-1:8080 to be idle, got %q", got)
+	}
+
+	// Done releases the pinned target through the sub-pool that reserved it:
+	// de-1 still holds the connection taken just above, de-2 is free again.
+	mr.Done()
+	if got := grouped.NextKeyed("de"); got != "de-2:8080" {
+		t.Fatalf("expected de-2:8080 released by Done, got %q", got)
+	}
+}
+
+func TestMatchResult_SelectTargetAcrossGroups(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:    &config.Match{Domain: "*.example.com"},
+			Balancer: &config.BalancerConfig{Type: config.BalancerLeastConn},
+			Action:   config.ActionRef{Name: "proxy_backend"},
+		},
+	})
+
+	grouped := balancer.NewGrouped(string(config.BalancerLeastConn), rt.RouteBalancer(0))
+	grouped.SwapGroupedTargets(map[string][]string{
+		"de": {"de-1:8080"},
+		"us": {"us-1:8080"},
+	})
+	rt.SetRouteBalancer(0, grouped)
+
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Host = "de.example.com"
+	r, _ = rt.Match(r)
+	mr := GetMatchResult(r)
+
+	if !mr.SelectTarget("us-1:8080") {
+		t.Fatal("expected a member of another group to be tracked")
+	}
+	if mr.Target != "us-1:8080" {
+		t.Fatalf("expected us-1:8080, got %q", mr.Target)
+	}
+	if got := grouped.NextKeyed("de"); got != "de-1:8080" {
+		t.Fatalf("expected de-1:8080 released, got %q", got)
+	}
+}
+
+func TestMatchResult_SelectTargetOutsidePool(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:    &config.Match{Domain: "*.example.com"},
+			Balancer: &config.BalancerConfig{Type: config.BalancerLeastConn},
+			Action:   config.ActionRef{Name: "proxy_backend"},
+		},
+	})
+
+	grouped := balancer.NewGrouped(string(config.BalancerLeastConn), rt.RouteBalancer(0))
+	grouped.SwapGroupedTargets(map[string][]string{"de": {"de-1:8080"}})
+	rt.SetRouteBalancer(0, grouped)
+
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Host = "de.example.com"
+	r, _ = rt.Match(r)
+	mr := GetMatchResult(r)
+
+	if mr.SelectTarget("ext-1:8080") {
+		t.Fatal("expected a target outside the pool to be untracked")
+	}
+	if mr.Target != "ext-1:8080" {
+		t.Fatalf("expected ext-1:8080, got %q", mr.Target)
+	}
+
+	// The balanced choice was released and Done must not touch the pool again.
+	mr.Done()
+	if got := grouped.NextKeyed("de"); got != "de-1:8080" {
+		t.Fatalf("expected de-1:8080 idle, got %q", got)
+	}
+}
+
+func TestMatchResult_SelectTargetNoBalancer(t *testing.T) {
+	mr := &MatchResult{}
+	if mr.SelectTarget("a:1") {
+		t.Fatal("expected no tracking without a balancer")
+	}
+	if mr.Target != "a:1" {
+		t.Fatalf("expected a:1, got %q", mr.Target)
+	}
+}

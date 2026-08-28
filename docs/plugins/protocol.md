@@ -189,6 +189,7 @@ Envelope {
 | CleanQuery | `cq` | `bool` |
 | RewritePath | `rp` | `string` |
 | Group | `gr` | `string` |
+| Target | `tg` | `string` |
 
 **SpeedLimit object (`sp`):**
 
@@ -238,6 +239,7 @@ ResponsePair {
 |-------|-------------|------|
 | Allow | `ok` | `bool` |
 | Group | `gr` | `string` |
+| Target | `tg` | `string` |
 
 ### `on_disconnect`
 

@@ -1241,7 +1241,16 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				r.URL.Path = res.RewritePath
 				r.URL.RawPath = ""
 			}
-			if res.Group != "" {
+			if res.Target != "" {
+				if !mr.SelectTarget(res.Target) {
+					slog.Warn("plugin target not in balancer pool",
+						"service", h.name,
+						"route", routeID,
+						"target", res.Target,
+					)
+				}
+				reqInfo.Target = res.Target
+			} else if res.Group != "" {
 				target, keyed := mr.SelectGroup(res.Group)
 				switch {
 				case !keyed:

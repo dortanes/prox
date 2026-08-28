@@ -79,6 +79,38 @@ func (m *MatchResult) SelectGroup(group string) (string, bool) {
 	return m.Target, true
 }
 
+// SelectTarget pins Target to one named upstream, overriding both the balanced
+// choice and any group. It is called after a plugin's on_request hook returns a
+// target, and wins over SelectGroup.
+//
+// The previously selected target is released first. When the pinned target
+// belongs to the route's balancer — including a target inside one of a grouped
+// balancer's sub-pools — it is reserved there, so connection-tracking
+// strategies stay accurate and Done() releases it as usual. A target outside
+// the pool is still used, but detached from the balancer and therefore
+// untracked; the returned bool reports which of the two happened.
+//
+// Routes whose upstream template has no "{target}" placeholder ignore the
+// pinned address.
+func (m *MatchResult) SelectTarget(target string) bool {
+	if m == nil {
+		return false
+	}
+	if m.bal != nil {
+		if m.Target != "" {
+			m.bal.Done(m.Target)
+			m.Target = ""
+		}
+		if tt, ok := m.bal.(balancer.TargetTaker); ok && tt.Take(target) {
+			m.Target = target
+			return true
+		}
+	}
+	m.Target = target
+	m.bal = nil
+	return false
+}
+
 // RouteID returns a compact identifier for this route (e.g. "web:0").
 func (m *MatchResult) RouteID(service string) string {
 	return service + ":" + strconv.Itoa(m.RouteIndex)

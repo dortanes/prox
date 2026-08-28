@@ -131,6 +131,7 @@ type AuthorizeResult struct {
 	CleanQuery  bool              `msgpack:"cq,omitempty"`
 	RewritePath string            `msgpack:"rp,omitempty"`
 	Group       string            `msgpack:"gr,omitempty"`
+	Target      string            `msgpack:"tg,omitempty"`
 }
 
 // UpstreamResponseInfo carries upstream response context for on_response hooks.
@@ -163,8 +164,9 @@ type ConnInfo struct {
 
 // ConnResult is the plugin's verdict for an on_connect hook.
 type ConnResult struct {
-	Allow bool   `msgpack:"ok"`
-	Group string `msgpack:"gr,omitempty"`
+	Allow  bool   `msgpack:"ok"`
+	Group  string `msgpack:"gr,omitempty"`
+	Target string `msgpack:"tg,omitempty"`
 }
 
 // DisconnectInfo carries statistics for the on_disconnect hook.

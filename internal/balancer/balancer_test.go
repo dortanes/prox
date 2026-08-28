@@ -336,3 +336,88 @@ func TestGrouped_NextNoFallback(t *testing.T) {
 		t.Errorf("Next no fallback: got %q, want empty", got)
 	}
 }
+
+func TestLeastConn_Take(t *testing.T) {
+	lc := NewLeastConn([]string{"a:1", "b:2"})
+
+	if !lc.Take("b:2") {
+		t.Fatal("expected Take to accept a pool member")
+	}
+	if got := lc.Conns("b:2"); got != 1 {
+		t.Fatalf("expected b:2 to hold 1 connection, got %d", got)
+	}
+	if lc.Take("c:3") {
+		t.Fatal("expected Take to reject a target outside the pool")
+	}
+
+	// The reserved target is now the busiest, so Next picks the other one.
+	if got := lc.Next(); got != "a:1" {
+		t.Fatalf("expected a:1, got %q", got)
+	}
+
+	lc.Done("b:2")
+	if got := lc.Conns("b:2"); got != 0 {
+		t.Fatalf("expected b:2 released, got %d", got)
+	}
+}
+
+func TestRoundRobin_Take(t *testing.T) {
+	rr := NewRoundRobin([]string{"a:1", "b:2"})
+	if !rr.Take("a:1") {
+		t.Fatal("expected Take to accept a pool member")
+	}
+	if rr.Take("c:3") {
+		t.Fatal("expected Take to reject a target outside the pool")
+	}
+}
+
+func TestRandom_Take(t *testing.T) {
+	r := NewRandom([]string{"a:1"})
+	if !r.Take("a:1") {
+		t.Fatal("expected Take to accept a pool member")
+	}
+	if r.Take("b:2") {
+		t.Fatal("expected Take to reject a target outside the pool")
+	}
+}
+
+func TestGrouped_Take(t *testing.T) {
+	g := NewGrouped("leastconn", NewLeastConn(nil))
+	g.SwapGroupedTargets(map[string][]string{
+		"de": {"de-1:8080", "de-2:8080"},
+		"us": {"us-1:8080"},
+	})
+
+	// A target is reserved in the sub-pool that owns it, whatever the group
+	// the caller would otherwise have landed in.
+	if !g.Take("de-2:8080") {
+		t.Fatal("expected Take to accept a grouped target")
+	}
+	if got := g.NextKeyed("de"); got != "de-1:8080" {
+		t.Fatalf("expected de-1:8080 to be the idle target, got %q", got)
+	}
+	if g.Take("nope:9") {
+		t.Fatal("expected Take to reject an unknown target")
+	}
+
+	g.Done("de-2:8080")
+	g.Done("de-1:8080")
+	if got := g.NextKeyed("de"); got != "de-1:8080" {
+		t.Fatalf("expected both targets released, got %q", got)
+	}
+}
+
+func TestGrouped_TakeFlatMode(t *testing.T) {
+	g := NewGrouped("leastconn", NewLeastConn(nil))
+	g.SwapTargets([]string{"a:1", "b:2"})
+
+	if !g.Take("b:2") {
+		t.Fatal("expected flat-mode Take to delegate to the inner balancer")
+	}
+	if got := g.Next(); got != "a:1" {
+		t.Fatalf("expected a:1, got %q", got)
+	}
+	if g.Take("c:3") {
+		t.Fatal("expected Take to reject a target outside the pool")
+	}
+}

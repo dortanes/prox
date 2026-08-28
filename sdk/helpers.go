@@ -91,6 +91,21 @@ func WithGroup(group string) Option {
 	}
 }
 
+// WithTarget pins the request to one named upstream, overriding both the
+// balanced choice and WithGroup. The address is one of the targets published
+// via SetTargets / SetGroupedTargets — a member of any group, not just the one
+// the domain resolves to — written the way the route's upstream template
+// expects it (e.g. "10.0.0.7:8080" for "http://{target}").
+//
+// A pinned target that belongs to the pool keeps connection tracking accurate;
+// one outside the pool is still used, but leastconn cannot account for it.
+// Routes whose upstream has no "{target}" placeholder ignore it.
+func WithTarget(target string) Option {
+	return func(r *Response) {
+		r.Target = target
+	}
+}
+
 // ConnOption configures a ConnResponse.
 type ConnOption func(*ConnResponse)
 
@@ -110,6 +125,17 @@ func AcceptConn(opts ...ConnOption) *ConnResponse {
 func WithConnGroup(group string) ConnOption {
 	return func(r *ConnResponse) {
 		r.Group = group
+	}
+}
+
+// WithConnTarget pins the connection to one named upstream, overriding both
+// the balanced choice and WithConnGroup. The address is one of the targets
+// published via SetTargets / SetGroupedTargets — a member of any group, not
+// just the one the SNI resolves to. It requires the route's pass upstream to
+// contain "{target}"; otherwise the address is ignored.
+func WithConnTarget(target string) ConnOption {
+	return func(r *ConnResponse) {
+		r.Target = target
 	}
 }
 
