@@ -188,6 +188,7 @@ Envelope {
 | SpeedLimit | `sp` | `object` |
 | CleanQuery | `cq` | `bool` |
 | RewritePath | `rp` | `string` |
+| Group | `gr` | `string` |
 
 **SpeedLimit object (`sp`):**
 
@@ -236,6 +237,7 @@ ResponsePair {
 | Field | msgpack key | Type |
 |-------|-------------|------|
 | Allow | `ok` | `bool` |
+| Group | `gr` | `string` |
 
 ### `on_disconnect`
 

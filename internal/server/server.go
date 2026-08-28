@@ -1241,6 +1241,24 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				r.URL.Path = res.RewritePath
 				r.URL.RawPath = ""
 			}
+			if res.Group != "" {
+				target, keyed := mr.SelectGroup(res.Group)
+				switch {
+				case !keyed:
+					slog.Warn("plugin group ignored: route has no keyed balancer",
+						"service", h.name,
+						"route", routeID,
+						"group", res.Group,
+					)
+				case target == "":
+					slog.Warn("plugin group has no available target",
+						"service", h.name,
+						"route", routeID,
+						"group", res.Group,
+					)
+				}
+				reqInfo.Target = target
+			}
 		}
 
 		// Wrap response writer for on_response hook.

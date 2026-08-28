@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/labostack/prox/internal/balancer"
 )
 
 func TestPeekSNI_RealClientHello(t *testing.T) {
@@ -154,5 +156,74 @@ func TestPrefixConn(t *testing.T) {
 
 	if string(result) != "HELLO WORLD" {
 		t.Errorf("expected %q, got %q", "HELLO WORLD", string(result))
+	}
+}
+
+func newGroupedRoute(t *testing.T, groups map[string][]string) *Route {
+	t.Helper()
+	grouped := balancer.NewGrouped("roundrobin", balancer.NewRoundRobin(nil))
+	grouped.SwapGroupedTargets(groups)
+	return &Route{
+		Domain:         "*.example.com",
+		DomainSegments: []string{"*", "example", "com"},
+		IsPass:         true,
+		UpstreamTpl:    "{target}",
+		Bal:            grouped,
+	}
+}
+
+func TestRoute_SelectTargetFromSNI(t *testing.T) {
+	route := newGroupedRoute(t, map[string][]string{
+		"de": {"de-1:8080"},
+		"us": {"us-1:8080"},
+	})
+
+	target, keyed := route.selectTarget("de.example.com", "")
+	if !keyed {
+		t.Fatal("expected keyed balancer")
+	}
+	if target != "de-1:8080" {
+		t.Fatalf("expected de-1:8080, got %q", target)
+	}
+}
+
+func TestRoute_SelectTargetPluginGroupWins(t *testing.T) {
+	route := newGroupedRoute(t, map[string][]string{
+		"de": {"de-1:8080"},
+		"us": {"us-1:8080"},
+	})
+
+	target, keyed := route.selectTarget("de.example.com", "us")
+	if !keyed {
+		t.Fatal("expected keyed balancer")
+	}
+	if target != "us-1:8080" {
+		t.Fatalf("expected us-1:8080, got %q", target)
+	}
+}
+
+func TestRoute_SelectTargetUnknownGroup(t *testing.T) {
+	route := newGroupedRoute(t, map[string][]string{"de": {"de-1:8080"}})
+
+	if target, _ := route.selectTarget("de.example.com", "nope"); target != "" {
+		t.Fatalf("expected no target for unknown group, got %q", target)
+	}
+}
+
+func TestRoute_SelectTargetNotKeyed(t *testing.T) {
+	route := &Route{
+		Domain:         "*.example.com",
+		DomainSegments: []string{"*", "example", "com"},
+		IsPass:         true,
+		UpstreamTpl:    "{target}",
+		Bal:            balancer.NewRoundRobin([]string{"flat-1:8080"}),
+	}
+
+	target, keyed := route.selectTarget("de.example.com", "us")
+	if keyed {
+		t.Fatal("expected non-keyed balancer")
+	}
+	if target != "flat-1:8080" {
+		t.Fatalf("expected flat-1:8080, got %q", target)
 	}
 }

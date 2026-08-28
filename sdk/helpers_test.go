@@ -61,3 +61,35 @@ func TestWithSpeedLimitNoGroupKey(t *testing.T) {
 		t.Fatalf("group key should be empty, got %q", resp.SpeedLimit.GroupKey)
 	}
 }
+
+func TestWithGroup(t *testing.T) {
+	resp := Allow(WithGroup("premium"))
+	if !resp.Allow {
+		t.Fatal("Allow should be true")
+	}
+	if resp.Group != "premium" {
+		t.Fatalf("expected group %q, got %q", "premium", resp.Group)
+	}
+}
+
+func TestWithoutGroup(t *testing.T) {
+	if resp := Allow(); resp.Group != "" {
+		t.Fatalf("expected empty group, got %q", resp.Group)
+	}
+}
+
+func TestAcceptConnWithGroup(t *testing.T) {
+	resp := AcceptConn(WithConnGroup("eu"))
+	if !resp.Allow {
+		t.Fatal("AcceptConn should allow")
+	}
+	if resp.Group != "eu" {
+		t.Fatalf("expected group %q, got %q", "eu", resp.Group)
+	}
+}
+
+func TestAcceptConnWithoutGroup(t *testing.T) {
+	if resp := AcceptConn(); resp.Group != "" {
+		t.Fatalf("expected empty group, got %q", resp.Group)
+	}
+}

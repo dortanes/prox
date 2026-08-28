@@ -168,6 +168,7 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 
 		if route.IsPass {
 			// Plugin on_connect gate.
+			var pluginGroup string
 			if d.plugins != nil && d.plugins.HasHook(route.RouteID, plugin.HookOnConnect) {
 				matches, globTail := matchDomainCaptures(route.DomainSegments, route.DomainGlob, sniLower)
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -188,23 +189,31 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 					conn.Close()
 					return
 				}
+				pluginGroup = res.Group
 			}
 
 			// Resolve upstream — static or balanced.
 			upstream := route.Upstream
 			var target string
 			if route.Bal != nil && route.UpstreamTpl != "" {
-				// For keyed balancers (grouped targets), extract
-				// the first wildcard capture from the SNI match
-				if kb, ok := route.Bal.(balancer.KeyedBalancer); ok {
-					captures, _ := matchDomainCaptures(route.DomainSegments, route.DomainGlob, sniLower)
-					var key string
-					if len(captures) > 0 {
-						key = captures[0]
-					}
-					target = kb.NextKeyed(key)
-				} else {
-					target = route.Bal.Next()
+				var keyed bool
+				target, keyed = route.selectTarget(sniLower, pluginGroup)
+				if pluginGroup != "" && !keyed {
+					slog.Warn("l4 plugin group ignored: route has no keyed balancer",
+						"sni", sni,
+						"pattern", route.Domain,
+						"group", pluginGroup,
+					)
+				}
+				if target == "" {
+					slog.Warn("l4 no target available",
+						"sni", sni,
+						"pattern", route.Domain,
+						"group", pluginGroup,
+						"remote", conn.RemoteAddr(),
+					)
+					conn.Close()
+					return
 				}
 				upstream = strings.ReplaceAll(route.UpstreamTpl, "{target}", target)
 			}
@@ -242,6 +251,25 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 		)
 	}
 	httpLn.Deliver(newPrefixConn(conn, buf))
+}
+
+// selectTarget picks a balancer target for a pass route. The group returned by
+// a plugin's on_connect hook wins over the SNI wildcard capture; an empty group
+// falls back to that capture. The boolean reports whether the route's balancer
+// is keyed — when false, the group cannot be honoured.
+func (r *Route) selectTarget(sniLower, group string) (string, bool) {
+	kb, ok := r.Bal.(balancer.KeyedBalancer)
+	if !ok {
+		return r.Bal.Next(), false
+	}
+	key := group
+	if key == "" {
+		captures, _ := matchDomainCaptures(r.DomainSegments, r.DomainGlob, sniLower)
+		if len(captures) > 0 {
+			key = captures[0]
+		}
+	}
+	return kb.NextKeyed(key), true
 }
 
 func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream string) {

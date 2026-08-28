@@ -178,6 +178,7 @@ sdk.WithSpeedLimit(down, up)          // Per-connection bandwidth cap (Mbps)
 sdk.WithSpeedLimit(down, up, groupKey)// Grouped bandwidth cap (shared by connections with same key)
 sdk.WithCleanQuery()                  // Remove query string from upstream request
 sdk.WithRewritePath(path)             // Override upstream request path
+sdk.WithGroup(group)                  // Pick the balancer target from a named group
 ```
 
 ### Response Modifications
@@ -196,6 +197,8 @@ sdk.WithResponseStatus(status)        // Override status code
 ```go
 sdk.AcceptConn()                      // Allow TCP connection
 sdk.RejectConn()                      // Close TCP connection
+
+sdk.WithConnGroup(group)              // Pick the balancer target from a named group
 ```
 
 ## Push API
@@ -229,6 +232,31 @@ p.SetActionGroupedTargets("dynamic_proxy", map[string][]string{
 ```
 
 With domain pattern `*.**`, a request to `de.example.com` captures `de` — the balancer picks from the `"de"` group only. Each group gets its own sub-balancer using the route's strategy.
+
+#### Per-Request Group Selection
+
+`sdk.WithGroup` overrides the group for a single request, so the choice can come from anything the `on_request` hook sees — a header, a token, a database lookup — instead of the domain:
+
+```go
+p.OnRequest(func(req *sdk.Request) *sdk.Response {
+    if tier := lookupTier(req.Header("Authorization")); tier != "" {
+        return sdk.Allow(sdk.WithGroup(tier))
+    }
+    return sdk.Allow()
+})
+```
+
+The target reserved during route matching is released before the new one is picked, so `leastconn` counters stay accurate. If the named group has no available target and the route has no [fallback](../configuration/load-balancing.md#fallback), the request is routed to the action's fallback handler, or answered with 502 when none is configured. Routes without a balancer ignore the group and log a warning.
+
+L4 `pass` routes work the same way through `sdk.WithConnGroup`, which picks the group for the whole TCP connection:
+
+```go
+p.OnConnect(func(conn *sdk.ConnRequest) *sdk.ConnResponse {
+    return sdk.AcceptConn(sdk.WithConnGroup(regionFor(conn.RemoteAddr)))
+})
+```
+
+Here the target is chosen after the hook returns, so nothing needs releasing. A group with no available target closes the connection — L4 has no fallback action.
 
 ### Speed Limiting
 

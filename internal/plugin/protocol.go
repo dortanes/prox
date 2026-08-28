@@ -121,15 +121,16 @@ type RequestInfo struct {
 
 // AuthorizeResult is the plugin's verdict for an on_request hook.
 type AuthorizeResult struct {
-	Allow      bool              `msgpack:"ok"`
-	Drop       bool              `msgpack:"dr,omitempty"`
-	Fallback   bool              `msgpack:"fb,omitempty"`
-	Status     int               `msgpack:"s,omitempty"`
-	Body       string            `msgpack:"b,omitempty"`
-	Headers    map[string]string `msgpack:"h,omitempty"`
-	SpeedLimit *SpeedLimit       `msgpack:"sp,omitempty"`
-	CleanQuery bool              `msgpack:"cq,omitempty"`
-	RewritePath string           `msgpack:"rp,omitempty"`
+	Allow       bool              `msgpack:"ok"`
+	Drop        bool              `msgpack:"dr,omitempty"`
+	Fallback    bool              `msgpack:"fb,omitempty"`
+	Status      int               `msgpack:"s,omitempty"`
+	Body        string            `msgpack:"b,omitempty"`
+	Headers     map[string]string `msgpack:"h,omitempty"`
+	SpeedLimit  *SpeedLimit       `msgpack:"sp,omitempty"`
+	CleanQuery  bool              `msgpack:"cq,omitempty"`
+	RewritePath string            `msgpack:"rp,omitempty"`
+	Group       string            `msgpack:"gr,omitempty"`
 }
 
 // UpstreamResponseInfo carries upstream response context for on_response hooks.
@@ -162,7 +163,8 @@ type ConnInfo struct {
 
 // ConnResult is the plugin's verdict for an on_connect hook.
 type ConnResult struct {
-	Allow bool `msgpack:"ok"`
+	Allow bool   `msgpack:"ok"`
+	Group string `msgpack:"gr,omitempty"`
 }
 
 // DisconnectInfo carries statistics for the on_disconnect hook.
@@ -204,4 +206,3 @@ func MarshalEnvelope(hook HookType, data interface{}) ([]byte, error) {
 	// Encode the envelope with the data bytes.
 	return msgpack.Marshal(&Envelope{Hook: hook, Data: buf.Bytes()})
 }
-

@@ -80,9 +80,37 @@ func WithRewritePath(path string) Option {
 	}
 }
 
+// WithGroup pins the request to a named target group of the route's balancer,
+// overriding the group derived from the domain wildcard capture.
+// Groups are the ones published via SetGroupedTargets / SetActionGroupedTargets.
+// If the group holds no available target, the request falls back to the route's
+// fallback action (or 502 when none is configured).
+func WithGroup(group string) Option {
+	return func(r *Response) {
+		r.Group = group
+	}
+}
+
+// ConnOption configures a ConnResponse.
+type ConnOption func(*ConnResponse)
+
 // AcceptConn creates an L4 connection approval.
-func AcceptConn() *ConnResponse {
-	return &ConnResponse{Allow: true}
+func AcceptConn(opts ...ConnOption) *ConnResponse {
+	r := &ConnResponse{Allow: true}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
+}
+
+// WithConnGroup pins the connection to a named target group of the route's
+// balancer, overriding the group derived from the SNI wildcard capture.
+// Groups are the ones published via SetGroupedTargets / SetActionGroupedTargets.
+// If the group holds no available target, the connection is closed.
+func WithConnGroup(group string) ConnOption {
+	return func(r *ConnResponse) {
+		r.Group = group
+	}
 }
 
 // RejectConn creates an L4 connection denial.

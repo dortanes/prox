@@ -88,15 +88,16 @@ func indexByte(s string, c byte) int {
 
 // Response is the plugin's verdict for an on_request hook.
 type Response struct {
-	Allow      bool              `msgpack:"ok" json:"allow"`
-	Drop       bool              `msgpack:"dr,omitempty" json:"drop,omitempty"`
-	Fallback   bool              `msgpack:"fb,omitempty" json:"fallback,omitempty"`
-	Status     int               `msgpack:"s,omitempty" json:"status,omitempty"`
-	Body       string            `msgpack:"b,omitempty" json:"body,omitempty"`
-	Headers    map[string]string `msgpack:"h,omitempty" json:"headers,omitempty"`
-	SpeedLimit *SpeedLimit       `msgpack:"sp,omitempty" json:"speed_limit,omitempty"`
+	Allow       bool              `msgpack:"ok" json:"allow"`
+	Drop        bool              `msgpack:"dr,omitempty" json:"drop,omitempty"`
+	Fallback    bool              `msgpack:"fb,omitempty" json:"fallback,omitempty"`
+	Status      int               `msgpack:"s,omitempty" json:"status,omitempty"`
+	Body        string            `msgpack:"b,omitempty" json:"body,omitempty"`
+	Headers     map[string]string `msgpack:"h,omitempty" json:"headers,omitempty"`
+	SpeedLimit  *SpeedLimit       `msgpack:"sp,omitempty" json:"speed_limit,omitempty"`
 	CleanQuery  bool              `msgpack:"cq,omitempty" json:"clean_query,omitempty"`
 	RewritePath string            `msgpack:"rp,omitempty" json:"rewrite_path,omitempty"`
+	Group       string            `msgpack:"gr,omitempty" json:"group,omitempty"`
 }
 
 // UpstreamResponse carries upstream response context for on_response hooks.
@@ -123,7 +124,8 @@ type ConnRequest struct {
 
 // ConnResponse is the plugin's verdict for an on_connect hook.
 type ConnResponse struct {
-	Allow bool `msgpack:"ok" json:"allow"`
+	Allow bool   `msgpack:"ok" json:"allow"`
+	Group string `msgpack:"gr,omitempty" json:"group,omitempty"`
 }
 
 // DisconnectEvent carries connection statistics for on_disconnect hooks.

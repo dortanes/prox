@@ -355,6 +355,9 @@ func (m *Manager) OnRequest(ctx context.Context, routeID string, req *RequestInf
 		if result.RewritePath != "" {
 			merged.RewritePath = result.RewritePath
 		}
+		if result.Group != "" {
+			merged.Group = result.Group
+		}
 	}
 
 	return merged, nil
@@ -404,6 +407,8 @@ func (m *Manager) OnConnect(ctx context.Context, routeID string, conn *ConnInfo)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	merged := &ConnResult{Allow: true}
+
 	for _, c := range callers {
 		result, err := c.CallConnect(ctx, conn)
 		if err != nil {
@@ -412,9 +417,12 @@ func (m *Manager) OnConnect(ctx context.Context, routeID string, conn *ConnInfo)
 		if !result.Allow {
 			return result, nil
 		}
+		if result.Group != "" {
+			merged.Group = result.Group
+		}
 	}
 
-	return &ConnResult{Allow: true}, nil
+	return merged, nil
 }
 
 // OnDisconnect fires a disconnect notification to all plugins bound to the route.

@@ -24,33 +24,59 @@ var matchResultKey = ctxKey{}
 
 // MatchResult holds data captured during route matching, available to handlers.
 type MatchResult struct {
-	RouteIndex    int    // index of the matched route in the service's route list
-	Action        string // resolved action name
-	DomainPattern string // the pattern from config, e.g. "*.myapp.dev"
-	MatchDomain   string // captured "*" wildcard value(s), e.g. "sub" for *.myapp.dev
-	MatchGlob     string // captured "**" glob suffix, e.g. "example.com" for *.storage.**
-	MatchPath     string // the path pattern, e.g. "/api/*"
-	Domain        string // actual request host (no port)
-	Path          string // actual request path
-	Target        string // selected target from balancer (empty if no balancer)
+	RouteIndex    int               // index of the matched route in the service's route list
+	Action        string            // resolved action name
+	DomainPattern string            // the pattern from config, e.g. "*.myapp.dev"
+	MatchDomain   string            // captured "*" wildcard value(s), e.g. "sub" for *.myapp.dev
+	MatchGlob     string            // captured "**" glob suffix, e.g. "example.com" for *.storage.**
+	MatchPath     string            // the path pattern, e.g. "/api/*"
+	Domain        string            // actual request host (no port)
+	Path          string            // actual request path
+	Target        string            // selected target from balancer (empty if no balancer)
 	Vars          map[string]string // route-level variables from "set"
-	done          func() // release callback for connection-tracking balancers
+	bal           balancer.Balancer // balancer that selected Target (nil if none)
 
 	// Speed limiting — populated from route config.
 	// Shared buckets are route-wide; BPS rates are for per-connection bucket creation.
 	DownloadBucket *throttle.Bucket // shared download bucket (nil when per-conn or no limit)
 	UploadBucket   *throttle.Bucket // shared upload bucket (nil when per-conn or no limit)
-	DownloadBps    int64             // per-connection download bytes/sec (0 = no limit)
-	UploadBps      int64             // per-connection upload bytes/sec (0 = no limit)
+	DownloadBps    int64            // per-connection download bytes/sec (0 = no limit)
+	UploadBps      int64            // per-connection upload bytes/sec (0 = no limit)
 }
 
 // Done signals that the request/connection has completed.
 // For connection-tracking balancers (e.g. leastconn), this decrements
 // the active connection counter. Safe to call multiple times or on nil.
 func (m *MatchResult) Done() {
-	if m != nil && m.done != nil {
-		m.done()
+	if m != nil && m.bal != nil && m.Target != "" {
+		m.bal.Done(m.Target)
 	}
+}
+
+// SelectGroup re-selects Target from the named group of the route's balancer,
+// overriding the group derived from the domain wildcard capture. It is called
+// after a plugin's on_request hook returns a group.
+//
+// The previously selected target is released first, so connection-tracking
+// balancers stay accurate. The returned target is empty when the group holds
+// no available target and the route has no fallback — callers should treat
+// that like any other "no target" case.
+//
+// The boolean reports whether the route has a keyed balancer; when false the
+// original target is left untouched.
+func (m *MatchResult) SelectGroup(group string) (string, bool) {
+	if m == nil || m.bal == nil {
+		return "", false
+	}
+	kb, ok := m.bal.(balancer.KeyedBalancer)
+	if !ok {
+		return m.Target, false
+	}
+	if m.Target != "" {
+		m.bal.Done(m.Target)
+	}
+	m.Target = kb.NextKeyed(group)
+	return m.Target, true
 }
 
 // RouteID returns a compact identifier for this route (e.g. "web:0").
@@ -292,9 +318,7 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 
 		if route.bal != nil {
 			result.Target = route.bal.Next()
-			bal := route.bal
-			target := result.Target
-			result.done = func() { bal.Done(target) }
+			result.bal = route.bal
 		}
 
 		ctx := context.WithValue(r.Context(), matchResultKey, result)
@@ -345,9 +369,7 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 			} else {
 				result.Target = route.bal.Next()
 			}
-			bal := route.bal
-			target := result.Target
-			result.done = func() { bal.Done(target) }
+			result.bal = route.bal
 		}
 
 		ctx := context.WithValue(r.Context(), matchResultKey, result)

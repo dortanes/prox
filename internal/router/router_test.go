@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/labostack/prox/internal/balancer"
 	"github.com/labostack/prox/internal/config"
 )
 
@@ -885,5 +886,138 @@ func TestRouter_ForwardProxyCatchAllOptimizationDisabled(t *testing.T) {
 	_, got = rt.Match(r)
 	if got != "forward" {
 		t.Errorf("forward proxy: expected %q, got %q", "forward", got)
+	}
+}
+
+func TestMatchResult_SelectGroup(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:    &config.Match{Domain: "*.example.com"},
+			Balancer: &config.BalancerConfig{Type: config.BalancerRoundRobin},
+			Action:   config.ActionRef{Name: "proxy_backend"},
+		},
+	})
+
+	grouped := balancer.NewGrouped(string(config.BalancerRoundRobin), rt.RouteBalancer(0))
+	grouped.SwapGroupedTargets(map[string][]string{
+		"de": {"de-1:8080"},
+		"us": {"us-1:8080"},
+	})
+	rt.SetRouteBalancer(0, grouped)
+
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Host = "de.example.com"
+	r, _ = rt.Match(r)
+	mr := GetMatchResult(r)
+	if mr.Target != "de-1:8080" {
+		t.Fatalf("expected domain capture to select de-1:8080, got %q", mr.Target)
+	}
+
+	target, keyed := mr.SelectGroup("us")
+	if !keyed {
+		t.Fatal("expected keyed balancer")
+	}
+	if target != "us-1:8080" || mr.Target != "us-1:8080" {
+		t.Fatalf("expected us-1:8080, got %q (MatchResult.Target %q)", target, mr.Target)
+	}
+}
+
+func TestMatchResult_SelectGroupUnknown(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:    &config.Match{Domain: "*.example.com"},
+			Balancer: &config.BalancerConfig{Type: config.BalancerRoundRobin},
+			Action:   config.ActionRef{Name: "proxy_backend"},
+		},
+	})
+
+	grouped := balancer.NewGrouped(string(config.BalancerRoundRobin), rt.RouteBalancer(0))
+	grouped.SwapGroupedTargets(map[string][]string{"de": {"de-1:8080"}})
+	rt.SetRouteBalancer(0, grouped)
+
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Host = "de.example.com"
+	r, _ = rt.Match(r)
+	mr := GetMatchResult(r)
+
+	target, keyed := mr.SelectGroup("nope")
+	if !keyed {
+		t.Fatal("expected keyed balancer")
+	}
+	if target != "" || mr.Target != "" {
+		t.Fatalf("expected no target for unknown group, got %q", target)
+	}
+}
+
+func TestMatchResult_SelectGroupFallback(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:    &config.Match{Domain: "*.example.com"},
+			Balancer: &config.BalancerConfig{Type: config.BalancerRoundRobin, Fallback: true},
+			Action:   config.ActionRef{Name: "proxy_backend"},
+		},
+	})
+
+	grouped := balancer.NewGrouped(string(config.BalancerRoundRobin), rt.RouteBalancer(0))
+	grouped.SetFallback(true)
+	grouped.SwapGroupedTargets(map[string][]string{"de": {"de-1:8080"}})
+	rt.SetRouteBalancer(0, grouped)
+
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Host = "de.example.com"
+	r, _ = rt.Match(r)
+	mr := GetMatchResult(r)
+
+	target, _ := mr.SelectGroup("nope")
+	if target != "de-1:8080" {
+		t.Fatalf("expected fallback to de-1:8080, got %q", target)
+	}
+}
+
+func TestMatchResult_SelectGroupReleasesPreviousTarget(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:    &config.Match{Domain: "*.example.com"},
+			Balancer: &config.BalancerConfig{Type: config.BalancerLeastConn},
+			Action:   config.ActionRef{Name: "proxy_backend"},
+		},
+	})
+
+	grouped := balancer.NewGrouped(string(config.BalancerLeastConn), rt.RouteBalancer(0))
+	grouped.SwapGroupedTargets(map[string][]string{
+		"de": {"de-1:8080", "de-2:8080"},
+	})
+	rt.SetRouteBalancer(0, grouped)
+
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Host = "de.example.com"
+	r, _ = rt.Match(r)
+	mr := GetMatchResult(r)
+	if mr.Target != "de-1:8080" {
+		t.Fatalf("expected de-1:8080 from the domain capture, got %q", mr.Target)
+	}
+
+	// Re-selecting the same group must release the target reserved during
+	// matching first, otherwise leastconn sees a phantom connection on de-1.
+	target, _ := mr.SelectGroup("de")
+	if target != "de-1:8080" {
+		t.Fatalf("expected de-1:8080 to be free again, got %q", target)
+	}
+}
+
+func TestMatchResult_SelectGroupNoBalancer(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "*.example.com"},
+			Action: config.ActionRef{Name: "proxy_backend"},
+		},
+	})
+
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Host = "de.example.com"
+	r, _ = rt.Match(r)
+
+	if target, keyed := GetMatchResult(r).SelectGroup("us"); keyed || target != "" {
+		t.Fatalf("expected no selection without a balancer, got %q keyed=%v", target, keyed)
 	}
 }

@@ -93,7 +93,7 @@ The `leastconn` strategy tracks active connections per target. A connection is c
 
 ## Fallback
 
-When using [plugins](../plugins/index.md) with grouped targets (`SetGroupedTargets` / `SetActionGroupedTargets`), the balancer normally returns an empty result if the requested key has no matching group. With `fallback: true`, the balancer instead picks a **random target from all groups**.
+When using [plugins](../plugins/index.md) with grouped targets (`SetGroupedTargets` / `SetActionGroupedTargets`), the balancer normally returns an empty result if the requested key has no matching group. The key comes from the domain wildcard capture, unless the plugin's `on_request` hook overrides it with [`sdk.WithGroup`](../plugins/sdk.md#per-request-group-selection). With `fallback: true`, the balancer instead picks a **random target from all groups**.
 
 This is useful for service discovery scenarios where a request may arrive for an unknown key — instead of failing, it gets routed to any available server.
 
