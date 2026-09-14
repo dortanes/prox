@@ -3,7 +3,7 @@ package server
 import (
 	"testing"
 
-	"github.com/labostack/prox/internal/config"
+	"github.com/dortanes/prox/internal/config"
 )
 
 func TestExtractDomains(t *testing.T) {

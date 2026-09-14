@@ -22,7 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/caddyserver/certmagic"
 
-	"github.com/labostack/prox/internal/config"
+	"github.com/dortanes/prox/internal/config"
 )
 
 // lockTTL is how long an S3-based advisory lock is valid before

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labostack/prox/internal/balancer"
+	"github.com/dortanes/prox/internal/balancer"
 )
 
 func TestPeekSNI_RealClientHello(t *testing.T) {

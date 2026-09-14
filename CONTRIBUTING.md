@@ -6,7 +6,7 @@ Thanks for your interest in contributing!
 
 ```bash
 # Clone
-git clone https://github.com/labostack/prox.git
+git clone https://github.com/dortanes/prox.git
 cd prox
 
 # Build

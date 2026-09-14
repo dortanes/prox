@@ -1,11 +1,11 @@
 # Go SDK
 
-The Go SDK (`github.com/labostack/prox/sdk`) provides a callback-based API for building plugins. It handles all transport details — stdin/stdout JSON messaging, Unix socket msgpack framing, and the `ready` handshake.
+The Go SDK (`github.com/dortanes/prox/sdk`) provides a callback-based API for building plugins. It handles all transport details — stdin/stdout JSON messaging, Unix socket msgpack framing, and the `ready` handshake.
 
 ## Installation
 
 ```bash
-go get github.com/labostack/prox/sdk
+go get github.com/dortanes/prox/sdk
 ```
 
 ## Quick Start
@@ -15,7 +15,7 @@ go get github.com/labostack/prox/sdk
 ```go
 package main
 
-import "github.com/labostack/prox/sdk"
+import "github.com/dortanes/prox/sdk"
 
 func main() {
     p := sdk.New()
@@ -37,7 +37,7 @@ func main() {
 ```go
 package main
 
-import "github.com/labostack/prox/sdk"
+import "github.com/dortanes/prox/sdk"
 
 func main() {
     p := sdk.New()

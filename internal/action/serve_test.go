@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/labostack/prox/internal/config"
+	"github.com/dortanes/prox/internal/config"
 )
 
 func TestServe_DirectoryMode(t *testing.T) {

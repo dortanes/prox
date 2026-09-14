@@ -6,7 +6,7 @@ import (
 	"github.com/caddyserver/certmagic"
 	"github.com/libdns/cloudflare"
 
-	"github.com/labostack/prox/internal/config"
+	"github.com/dortanes/prox/internal/config"
 )
 
 // --- resolveStoragePath ---

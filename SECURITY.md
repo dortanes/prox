@@ -6,7 +6,7 @@ If you discover a security vulnerability in prox, please report it responsibly.
 
 **Do NOT open a public GitHub issue.**
 
-Instead, [open a private security advisory](https://github.com/labostack/prox/security/advisories/new) on GitHub.
+Instead, [open a private security advisory](https://github.com/dortanes/prox/security/advisories/new) on GitHub.
 
 Include:
 

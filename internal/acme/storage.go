@@ -6,7 +6,7 @@ import (
 
 	"github.com/caddyserver/certmagic"
 
-	"github.com/labostack/prox/internal/config"
+	"github.com/dortanes/prox/internal/config"
 )
 
 // buildStorage creates the appropriate certmagic.Storage backend

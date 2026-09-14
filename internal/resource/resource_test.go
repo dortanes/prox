@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/labostack/prox/internal/config"
+	"github.com/dortanes/prox/internal/config"
 )
 
 func TestResolver_TextResource(t *testing.T) {

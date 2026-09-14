@@ -21,7 +21,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/labostack/prox/sdk"
+	"github.com/dortanes/prox/sdk"
 )
 
 func main() {

@@ -10,7 +10,7 @@ Run prox with Docker Compose:
 # docker-compose.yml
 services:
   prox:
-    image: ghcr.io/labostack/prox:latest
+    image: ghcr.io/dortanes/prox:latest
     ports:
       - "443:443"
       - "8080:8080"
@@ -23,7 +23,7 @@ services:
 Standalone container:
 
 ```bash
-docker run -v ./config.json5:/etc/prox/config.json5 -p 8080:8080 ghcr.io/labostack/prox
+docker run -v ./config.json5:/etc/prox/config.json5 -p 8080:8080 ghcr.io/dortanes/prox
 ```
 
 ## Hot Reload

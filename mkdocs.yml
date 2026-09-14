@@ -1,8 +1,8 @@
 site_name: prox
-site_url: https://labostack.github.io/prox
+site_url: https://dortanes.github.io/prox
 site_description: Modular reverse proxy with config-driven routing, load balancing, L4/L7 dispatching, and plugin middleware.
-repo_url: https://github.com/labostack/prox
-repo_name: labostack/prox
+repo_url: https://github.com/dortanes/prox
+repo_name: dortanes/prox
 edit_uri: edit/main/docs/
 
 theme:
@@ -84,4 +84,4 @@ plugins:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/labostack/prox
+      link: https://github.com/dortanes/prox

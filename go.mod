@@ -1,4 +1,4 @@
-module github.com/labostack/prox
+module github.com/dortanes/prox
 
 go 1.25.0
 

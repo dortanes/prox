@@ -2,19 +2,19 @@
 
 A modular reverse proxy with config-driven routing, load balancing, L4/L7 dispatching, hot reload, and plugin middleware.
 
-[![CI](https://github.com/labostack/prox/actions/workflows/ci.yml/badge.svg)](https://github.com/labostack/prox/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/labostack/prox.svg)](https://pkg.go.dev/github.com/labostack/prox)
-[![Release](https://img.shields.io/github/v/release/labostack/prox?logo=github&color=blue)](https://github.com/labostack/prox/releases)
+[![CI](https://github.com/dortanes/prox/actions/workflows/ci.yml/badge.svg)](https://github.com/dortanes/prox/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/dortanes/prox.svg)](https://pkg.go.dev/github.com/dortanes/prox)
+[![Release](https://img.shields.io/github/v/release/dortanes/prox?logo=github&color=blue)](https://github.com/dortanes/prox/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**[Documentation](https://labostack.github.io/prox)** · [Getting Started](https://labostack.github.io/prox/getting-started) · [Configuration](https://labostack.github.io/prox/configuration/) · [Plugins](https://labostack.github.io/prox/plugins/) · [Deployment](https://labostack.github.io/prox/deployment)
+**[Documentation](https://dortanes.github.io/prox)** · [Getting Started](https://dortanes.github.io/prox/getting-started) · [Configuration](https://dortanes.github.io/prox/configuration/) · [Plugins](https://dortanes.github.io/prox/plugins/) · [Deployment](https://dortanes.github.io/prox/deployment)
 
 ---
 
 ## Install
 
 ```bash
-go install github.com/labostack/prox/cmd/prox@latest
+go install github.com/dortanes/prox/cmd/prox@latest
 ```
 
 ## Usage
@@ -50,12 +50,12 @@ Minimal configuration:
 - **L4 + L7** — SNI-based TCP pass-through alongside HTTP on the same port
 - **Load balancing** — round-robin, random, least-connections
 - **Speed limiting** — per-route, per-connection, or shared bandwidth caps
-- **Plugin middleware** — auth, response modification, service discovery via [Go SDK](https://labostack.github.io/prox/plugins/sdk)
+- **Plugin middleware** — auth, response modification, service discovery via [Go SDK](https://dortanes.github.io/prox/plugins/sdk)
 - **Hot reload** — zero-downtime config swap via file watcher or SIGHUP
-- **Admin API** — optional REST API for [health checks, reload, and runtime inspection](https://labostack.github.io/prox/admin-api)
+- **Admin API** — optional REST API for [health checks, reload, and runtime inspection](https://dortanes.github.io/prox/admin-api)
 - **WebSocket & HTTP/2** — transparent proxying with h2c upstream support
 - **TLS** — multi-cert SNI with directory-based certificate loading
-- **Automatic HTTPS** — ACME certificates via Let's Encrypt / ZeroSSL with [Cloudflare DNS](https://labostack.github.io/prox/tls) for wildcard support and S3-compatible storage for multi-server deployments
+- **Automatic HTTPS** — ACME certificates via Let's Encrypt / ZeroSSL with [Cloudflare DNS](https://dortanes.github.io/prox/tls) for wildcard support and S3-compatible storage for multi-server deployments
 
 ## Performance
 

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/labostack/prox/internal/config"
+	"github.com/dortanes/prox/internal/config"
 )
 
 // Resolver looks up resource content by name.

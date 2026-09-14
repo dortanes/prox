@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/labostack/prox/internal/balancer"
-	"github.com/labostack/prox/internal/throttle"
+	"github.com/dortanes/prox/internal/balancer"
+	"github.com/dortanes/prox/internal/throttle"
 )
 
 const (
