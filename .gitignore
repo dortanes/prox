@@ -1,0 +1,60 @@
+# Binary
+/prox
+*.exe
+*.dll
+*.dylib
+*.so
+
+# Build output
+/dist/
+/site/
+
+# IDE
+.idea/
+.vscode/
+.fleet/
+.history/
+.zed/
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.AppleDouble
+._*
+Desktop.ini
+Thumbs.db
+
+# Test
+coverage.out
+coverage.html
+*.test
+*.prof
+
+# Debug
+__debug_bin*
+
+# Environment
+.env*
+!.env.example
+
+# Local runtime state
+/acme/
+/data/
+/logs/
+*.log
+/*.db
+/*.db-*
+/*.sqlite
+/*.sqlite3
+
+# Caches
+.cache/
+.go-build/
+
+# Agent
+GEMINI.md
+.gemini
+CLAUDE.md
