@@ -4,26 +4,45 @@ Install prox, create a minimal configuration, and start proxying traffic.
 
 ## Installation
 
-Install v1.0.0 via `go install`:
+Download the latest archive for your operating system and architecture from [GitHub Releases](https://github.com/dortanes/prox/releases/latest). Extract `prox` (`prox.exe` on Windows), place it on your `PATH`, then verify the installation:
 
 ```bash
-go install github.com/dortanes/prox/cmd/prox@v1.0.0
 prox version
 ```
 
-To build from source:
+Alternatively, install with Go 1.25 or later:
+
+```bash
+go install github.com/dortanes/prox/cmd/prox@latest
+prox version
+```
+
+To build the current source checkout:
 
 ```bash
 git clone https://github.com/dortanes/prox.git
 cd prox
-git checkout v1.0.0
-make build VERSION=v1.0.0
+make build
 ./prox version
 ```
 
-## Minimal Configuration
+A multi-platform container image is also available:
 
-Create a `config.json5` file with a single service and action:
+```bash
+docker run --rm ghcr.io/dortanes/prox:latest prox version
+```
+
+## Quick Start
+
+Start a small local backend. Python is used only for this example:
+
+```bash
+mkdir -p prox-demo
+printf 'prox works\n' > prox-demo/index.html
+python3 -m http.server 3000 --bind 127.0.0.1 --directory prox-demo
+```
+
+Create `config.json5` in another terminal:
 
 ```json5
 {
@@ -33,22 +52,21 @@ Create a `config.json5` file with a single service and action:
       routes: [
         {
           match: { path: "/*" },
-          action: "proxy",
+          action: "backend",
         },
       ],
     },
   },
   actions: {
-    proxy: {
+    backend: {
       type: "proxy",
-      upstream: "localhost:3000",
-      timeout: "10s",
+      upstream: "127.0.0.1:3000",
     },
   },
 }
 ```
 
-This configuration listens on port 8080 and proxies all requests to `localhost:3000`.
+This configuration listens on port 8080 and proxies all requests to the local backend.
 
 ## Validate
 
@@ -63,6 +81,13 @@ prox validate -config config.json5
 
 ```bash
 prox serve -config config.json5
+```
+
+Send a request through prox from a third terminal:
+
+```bash
+curl http://127.0.0.1:8080
+# prox works
 ```
 
 To enable debug-level logging:
