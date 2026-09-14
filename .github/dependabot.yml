@@ -1,0 +1,74 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "build(deps)"
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      root-go-modules:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "build(deps)"
+
+  - package-ecosystem: gomod
+    directory: /sdk
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      sdk-go-modules:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "build(deps)"
+
+  - package-ecosystem: gomod
+    directory: /examples/plugin-auth
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      plugin-auth-go-modules:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "build(deps)"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      docker-images:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "build(deps)"
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      documentation:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "build(deps)"
