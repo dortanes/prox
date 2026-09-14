@@ -52,34 +52,15 @@ No generated source files are currently committed. If generated files are introd
 
 Keep each pull request focused. Describe the user-visible effect, note compatibility implications, and list the commands used for validation. Redact credentials and private infrastructure from configs and logs.
 
-## v1.0.0 release process
+## Release process
 
-The application and SDK are versioned independently. The root module uses `v1.0.0`; the nested SDK module uses `sdk/v1.0.0`. Both tags point to the same verified commit.
+Release Please maintains one release pull request from Conventional Commits pushed to `main`. Subsequent releasable commits update the same pull request. Merge it when the accumulated changes are ready to publish; do not create release tags manually.
 
-From a clean checkout of `main`:
+The application and SDK share one version because the SDK protocol and API must match the application. A merged release pull request creates `vX.Y.Z` for the root module and `sdk/vX.Y.Z` for the nested SDK module at the same commit. The first release is `1.0.0`.
 
-```bash
-git switch main
-git pull --ff-only origin main
-test -z "$(git status --porcelain)"
+Merging the release pull request creates both GitHub Releases and runs the release workflow for the application tag. The workflow verifies every Go module, publishes application archives and checksums, and pushes `ghcr.io/dortanes/prox:X.Y.Z` and `latest`. The SDK tag publishes the Go module without separate artifacts.
 
-make build VERSION=v1.0.0
-make test
-make vet
-make lint
-make validate
-(cd sdk && go test -race ./... && go vet ./...)
-(cd examples/plugin-auth && go test -race ./... && go vet ./...)
-
-git tag -a sdk/v1.0.0 -m "sdk v1.0.0"
-git tag -a v1.0.0 -m "prox v1.0.0"
-git push origin sdk/v1.0.0
-git push origin v1.0.0
-```
-
-Push the SDK tag first so `github.com/dortanes/prox/sdk@v1.0.0` is available before the application release. The `v1.0.0` tag starts the release workflow, which publishes application archives, checksums, and container images. The SDK tag publishes the Go module only.
-
-After the workflow completes, verify the published artifacts from a clean environment:
+After the workflow completes, verify the published artifacts from a clean environment, replacing `1.0.0` with the released version:
 
 ```bash
 go install github.com/dortanes/prox/cmd/prox@v1.0.0

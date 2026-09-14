@@ -37,6 +37,10 @@ changelog:
       - "^test:"
       - "^ci:"
 
+release:
+  mode: keep-existing
+  replace_existing_artifacts: true
+
 dockers_v2:
   - id: prox
     ids:

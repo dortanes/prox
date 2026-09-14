@@ -3,11 +3,17 @@ name: Release
 on:
   push:
     tags:
-      - "v1.*"
+      - "v*"
+  workflow_call:
+    inputs:
+      tag:
+        description: "Existing semantic release tag, for example v1.0.0"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing v1 release tag, for example v1.0.0"
+        description: "Existing semantic release tag, for example v1.0.0"
         required: true
         type: string
 
@@ -48,8 +54,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v1\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tag must be a v1 semantic version." >&2
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must be a semantic version prefixed with v." >&2
             exit 1
           fi
 
