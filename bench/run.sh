@@ -8,11 +8,11 @@ UPSTREAM_PORT=9877
 URL="http://127.0.0.1:${PORT}/"
 
 # wrk parameters
-DURATION=10
+DURATION=30
 CONNECTIONS=256
 THREADS=4
-WARMUP=3           # warmup duration in seconds
-RUNS=3
+WARMUP=5
+RUNS=5
 
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
@@ -21,6 +21,13 @@ NC='\033[0m'
 
 log()  { echo -e "${CYAN}[bench]${NC} $*"; }
 ok()   { echo -e "${GREEN}[  ok ]${NC} $*"; }
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || {
+        echo "Missing required command: $1" >&2
+        exit 1
+    }
+}
 
 kill_port() {
     local pids
@@ -40,7 +47,6 @@ cleanup() {
     kill_port $UPSTREAM_PORT
     rm -f "$BENCH_DIR/prox-bin"
 }
-trap cleanup EXIT
 
 wait_ready() {
     local port=$1 tries=0
@@ -52,7 +58,7 @@ wait_ready() {
 }
 
 run_single() {
-    wrk -t$THREADS -c$CONNECTIONS -d${DURATION}s --latency "$URL" 2>&1
+    wrk -t$THREADS -c$CONNECTIONS -d${DURATION}s --latency "$1" 2>&1
 }
 
 extract_rps()   { echo "$1" | grep "Requests/sec:" | awk '{printf "%.0f", $2}'; }
@@ -60,31 +66,37 @@ extract_avg()   { echo "$1" | grep "^[[:space:]]*Latency" | head -1 | awk '{prin
 extract_p99()   { echo "$1" | grep "99%" | awk '{print $2}'; }
 
 bench_one() {
-    local name=$1 best_rps=0 best_raw=""
+    local name=$1 target_url=${2:-$URL}
+    local run_rps=() run_raw=()
 
     for run in $(seq 1 $RUNS); do
-        # Warmup
-        wrk -t2 -c64 -d${WARMUP}s "$URL" > /dev/null 2>&1 || true
+        wrk -t2 -c64 -d${WARMUP}s "$target_url" > /dev/null 2>&1 || true
         sleep 0.5
 
         local raw
-        raw=$(run_single)
+        raw=$(run_single "$target_url")
         local rps
         rps=$(extract_rps "$raw")
-
-        if [ -n "$rps" ] && [ "$rps" -gt "$best_rps" ] 2>/dev/null; then
-            best_rps=$rps
-            best_raw="$raw"
-        fi
+        run_rps+=("${rps:-0}")
+        run_raw+=("$raw")
 
         log "  Run $run: ${rps:-0} req/s"
     done
 
+    local median_rps selected_raw=""
+    median_rps=$(printf '%s\n' "${run_rps[@]}" | sort -n | awk '{ values[NR] = $1 } END { print values[int((NR + 1) / 2)] }')
+    for i in "${!run_rps[@]}"; do
+        if [ "${run_rps[$i]}" = "$median_rps" ]; then
+            selected_raw=${run_raw[$i]}
+            break
+        fi
+    done
+
     local avg p99
-    avg=$(extract_avg "$best_raw")
-    p99=$(extract_p99 "$best_raw")
+    avg=$(extract_avg "$selected_raw")
+    p99=$(extract_p99 "$selected_raw")
     NAMES+=("$name")
-    RPS_LIST+=("$best_rps")
+    RPS_LIST+=("$median_rps")
     AVG_LIST+=("${avg:-N/A}")
     P99_LIST+=("${p99:-N/A}")
 }
@@ -94,16 +106,32 @@ RPS_LIST=()
 AVG_LIST=()
 P99_LIST=()
 
+for command_name in go git wrk nginx haproxy caddy traefik curl lsof; do
+    require_command "$command_name"
+done
+
+trap cleanup EXIT
+
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}  Reverse Proxy Benchmark${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
+echo "  Date:         $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+echo "  Revision:     $(git -C "$PROJECT_DIR" describe --always --dirty)"
+echo "  OS:           $(sw_vers -productVersion) ($(uname -m))"
 echo "  Machine:      $(sysctl -n machdep.cpu.brand_string)"
 echo "  Cores:        $(sysctl -n hw.ncpu)"
 echo "  RAM:          $(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 )) GB"
+echo "  Go:           $(go version)"
+echo "  wrk:          $(wrk --version 2>&1 | head -1)"
+echo "  Nginx:        $(nginx -v 2>&1)"
+echo "  HAProxy:      $(haproxy -v 2>&1 | head -1)"
+echo "  Caddy:        $(caddy version 2>&1 | head -1)"
+echo "  Traefik:      $(traefik version 2>&1 | awk -F': ' '/^Version:/ { print $2; exit }')"
 echo "  wrk:          ${THREADS} threads, ${CONNECTIONS} connections, ${DURATION}s"
-echo "  Runs:         ${RUNS} per proxy (best used)"
+echo "  Runtime:      3 execution threads per proxy, default garbage collection"
+echo "  Runs:         ${RUNS} per target (median used)"
 echo ""
 
 # Start upstream
@@ -114,12 +142,16 @@ wait_ready $UPSTREAM_PORT
 ok "Upstream ready"
 echo ""
 
+log "Benchmarking ${BOLD}upstream baseline${NC}..."
+bench_one "upstream" "http://127.0.0.1:${UPSTREAM_PORT}/"
+echo ""
+
 # ─── prox ─────────────────────────────────────────────────────────────────
 log "Building prox..."
 (cd "$PROJECT_DIR" && go build -ldflags="-s -w" -o bench/prox-bin ./cmd/prox) 2>&1
 log "Benchmarking ${BOLD}prox${NC}..."
 kill_port $PORT
-LOG_LEVEL=error GOMAXPROCS=3 PROX_WORKERS=2 GOGC=off "$BENCH_DIR/prox-bin" serve -config "$BENCH_DIR/prox.json5" &>/dev/null &
+LOG_LEVEL=error GOMAXPROCS=3 "$BENCH_DIR/prox-bin" serve -config "$BENCH_DIR/prox.json5" &>/dev/null &
 wait_ready $PORT
 bench_one "prox"
 kill_port $PORT
@@ -169,7 +201,7 @@ echo ""
 # ─── Results ──────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}  Results (best of ${RUNS} runs)${NC}"
+echo -e "${BOLD}  Results (median of ${RUNS} runs)${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 printf "  ${BOLD}%-12s %10s %10s %10s${NC}\n" "Proxy" "Req/s" "Avg Lat" "P99 Lat"
