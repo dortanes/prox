@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/dortanes/prox/compare/v1.0.0...v1.0.1) (2026-09-14)
+
+
+### Performance Improvements
+
+* **bench:** ⚡ make results reproducible ([da9fca7](https://github.com/dortanes/prox/commit/da9fca70e240e2c0425504cbf1646aec80f3dbaa))
+
 ## 1.0.0 (2026-09-14)
 
 
