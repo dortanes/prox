@@ -1,28 +1,24 @@
-<table>
-  <tr>
-    <td width="150" align="center" valign="middle">
-      <img src="assets/prox-logo.png" alt="prox logo" width="128">
-    </td>
-    <td valign="middle">
-      <h1>prox</h1>
-      <p><strong>High-throughput HTTP routing and raw TCP pass-through on the same listener.</strong></p>
-      <p>A single-binary reverse proxy with automatic certificates, JSON5 configuration, atomic reloads, and external plugins.</p>
-      <p>
-        <a href="https://github.com/dortanes/prox/actions/workflows/ci.yml"><img src="https://github.com/dortanes/prox/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-        <a href="https://pkg.go.dev/github.com/dortanes/prox"><img src="https://pkg.go.dev/badge/github.com/dortanes/prox.svg" alt="Go reference"></a>
-        <a href="https://github.com/dortanes/prox/releases"><img src="https://img.shields.io/github/v/release/dortanes/prox?logo=github&amp;color=blue" alt="Latest release"></a>
-        <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-      </p>
-      <p>
-        <a href="#installation">Install</a> ·
-        <a href="#quick-start">Quick start</a> ·
-        <a href="https://dortanes.github.io/prox">Documentation</a> ·
-        <a href="https://github.com/dortanes/prox/releases">Releases</a> ·
-        <a href="CONTRIBUTING.md">Contributing</a>
-      </p>
-    </td>
-  </tr>
-</table>
+# prox
+
+<img src="assets/prox-logo.png" alt="prox logo" width="128" align="left">
+
+<p><strong>High-throughput HTTP routing and raw TCP pass-through on the same listener.</strong></p>
+<p>A single-binary reverse proxy with automatic certificates, JSON5 configuration, atomic reloads, and external plugins.</p>
+<p>
+  <a href="https://github.com/dortanes/prox/actions/workflows/ci.yml"><img src="https://github.com/dortanes/prox/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://pkg.go.dev/github.com/dortanes/prox"><img src="https://pkg.go.dev/badge/github.com/dortanes/prox.svg" alt="Go reference"></a>
+  <a href="https://github.com/dortanes/prox/releases"><img src="https://img.shields.io/github/v/release/dortanes/prox?logo=github&amp;color=blue" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+</p>
+<p>
+  <a href="#installation">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="https://dortanes.github.io/prox">Documentation</a> ·
+  <a href="https://github.com/dortanes/prox/releases">Releases</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
+<br clear="left">
 
 ## Why prox
 
