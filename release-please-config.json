@@ -5,8 +5,6 @@
   "packages": {
     ".": {
       "release-type": "go",
-      "package-name": "prox",
-      "component": "prox",
       "include-component-in-tag": false,
       "include-v-in-tag": true,
       "initial-version": "1.0.0"
@@ -20,15 +18,5 @@
       "tag-separator": "/",
       "initial-version": "1.0.0"
     }
-  },
-  "plugins": [
-    {
-      "type": "linked-versions",
-      "groupName": "prox",
-      "components": [
-        "prox",
-        "sdk"
-      ]
-    }
-  ]
+  }
 }
