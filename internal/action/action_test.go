@@ -100,6 +100,32 @@ func TestProxy_ForwardsToUpstream(t *testing.T) {
 	}
 }
 
+func TestProxy_H2CUpstream(t *testing.T) {
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, r.Proto)
+	}))
+	upstream.Config.Protocols = new(http.Protocols)
+	upstream.Config.Protocols.SetUnencryptedHTTP2(true)
+	upstream.Start()
+	defer upstream.Close()
+
+	handler, err := NewProxy(&config.Action{
+		Type:     config.ActionTypeProxy,
+		Upstream: upstream.URL,
+		Proto:    "h2",
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+
+	if rec.Code != 200 || rec.Body.String() != "HTTP/2.0" {
+		t.Fatalf("status %d, upstream saw %q, want HTTP/2.0", rec.Code, rec.Body.String())
+	}
+}
+
 func TestProxy_CustomHeaders(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// In Go, Host header is stored in r.Host, not r.Header.

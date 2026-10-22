@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/dortanes/prox/internal/plugin"
-	"golang.org/x/net/http2"
 )
 
 const usageInterval = 100 * time.Millisecond
@@ -124,7 +123,7 @@ type sessionEnv struct {
 	webAddr    string
 	secureAddr string
 	roots      *x509.CertPool
-	h2         *http2.Transport
+	h2         *http.Transport
 }
 
 func startSessionEnv(t *testing.T) *sessionEnv {
@@ -186,13 +185,17 @@ func startSessionEnv(t *testing.T) *sessionEnv {
 	t.Cleanup(stop)
 	waitForPort(t, securePort, 3*time.Second)
 
-	env.h2 = &http2.Transport{
-		DialTLSContext: func(_ context.Context, _, _ string, _ *tls.Config) (net.Conn, error) {
-			return tls.Dial("tcp", env.secureAddr, &tls.Config{
+	h2Only := new(http.Protocols)
+	h2Only.SetHTTP2(true)
+	env.h2 = &http.Transport{
+		Protocols: h2Only,
+		DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			d := tls.Dialer{Config: &tls.Config{
 				ServerName: "prox.test",
 				RootCAs:    env.roots,
 				NextProtos: []string{"h2"},
-			})
+			}}
+			return d.DialContext(ctx, "tcp", env.secureAddr)
 		},
 	}
 	t.Cleanup(env.h2.CloseIdleConnections)

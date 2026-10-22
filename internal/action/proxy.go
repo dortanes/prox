@@ -15,7 +15,6 @@ import (
 
 	"github.com/dortanes/prox/internal/config"
 	"github.com/dortanes/prox/internal/router"
-	"golang.org/x/net/http2"
 )
 
 // Proxy forwards requests to an upstream server.
@@ -437,15 +436,15 @@ func buildTransport(proto string, svcCfg *config.ServerConfig, dialTimeout, resp
 		readIdle := durationOr(svcCfg, func(c *config.ServerConfig) time.Duration { return c.H2ReadIdleTimeout.Duration }, 30*time.Second)
 		pingTimeout := durationOr(svcCfg, func(c *config.ServerConfig) time.Duration { return c.H2PingTimeout.Duration }, 15*time.Second)
 
-		return &http2.Transport{
-			AllowHTTP: true,
-			// DialTLSContext is used even for non-TLS (AllowHTTP) connections.
-			// We return a plain TCP connection — the transport handles h2c framing.
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				return dialer.DialContext(ctx, network, addr)
+		protocols := new(http.Protocols)
+		protocols.SetUnencryptedHTTP2(true)
+		return &http.Transport{
+			DialContext: dialer.DialContext,
+			Protocols:   protocols,
+			HTTP2: &http.HTTP2Config{
+				SendPingTimeout: readIdle,
+				PingTimeout:     pingTimeout,
 			},
-			ReadIdleTimeout: readIdle,
-			PingTimeout:     pingTimeout,
 		}
 	}
 
