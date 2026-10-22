@@ -53,8 +53,12 @@ func handleConn(conn net.Conn, p *Plugin) {
 		}
 
 		// Fire-and-forget: process without response.
-		if env.Hook == HookDisconnect {
+		switch env.Hook {
+		case HookDisconnect:
 			handleDisconnect(p, env.Data)
+			continue
+		case HookUsage:
+			handleUsage(p, env.Data)
 			continue
 		}
 
@@ -144,6 +148,18 @@ func handleDisconnect(p *Plugin, data []byte) {
 		return
 	}
 	p.onDisc(&event)
+}
+
+func handleUsage(p *Plugin, data []byte) {
+	if p.onUsage == nil {
+		return
+	}
+	var report UsageReport
+	if err := msgpack.Unmarshal(data, &report); err != nil {
+		log.Printf("unmarshal usage: %v", err)
+		return
+	}
+	p.onUsage(&report)
 }
 
 // responsePair bundles request + upstream response for the on_response hook.

@@ -21,18 +21,22 @@ type ConnectHandler func(conn *ConnRequest) *ConnResponse
 // DisconnectHandler receives connection statistics after a connection ends.
 type DisconnectHandler func(event *DisconnectEvent)
 
+// UsageHandler receives periodic per-session traffic reports.
+type UsageHandler func(report *UsageReport)
+
 // ConfigureHandler is called when the plugin receives route configuration.
 type ConfigureHandler func(route Route)
 
 // Plugin is the main entry point for writing prox plugins.
 type Plugin struct {
-	mu     sync.Mutex
-	stdout *json.Encoder
-	onCfg  ConfigureHandler
-	onReq  RequestHandler
-	onResp ResponseHandler
-	onConn ConnectHandler
-	onDisc DisconnectHandler
+	mu      sync.Mutex
+	stdout  *json.Encoder
+	onCfg   ConfigureHandler
+	onReq   RequestHandler
+	onResp  ResponseHandler
+	onConn  ConnectHandler
+	onDisc  DisconnectHandler
+	onUsage UsageHandler
 }
 
 // New creates a new plugin instance.
@@ -67,8 +71,31 @@ func (p *Plugin) OnConnect(h ConnectHandler) {
 
 // OnDisconnect registers a handler for connection statistics events.
 // This is a fire-and-forget notification — no response is expected.
+// Its byte counts are also reported through OnUsage; count bytes from one
+// of the two hooks, never both.
 func (p *Plugin) OnDisconnect(h DisconnectHandler) {
 	p.onDisc = h
+}
+
+// OnUsage registers a handler for periodic usage reports. Each report holds
+// the bytes every session moved on the plugin's routes since the previous
+// report, live connections included; the bytes of a connection are reported
+// exactly once across all reports. The interval is the plugin's
+// usage_interval in the prox config. Fire-and-forget, like OnDisconnect.
+func (p *Plugin) OnUsage(h UsageHandler) {
+	p.onUsage = h
+}
+
+// DropSessions closes every connection and stream on this prox instance that
+// carries one of the session keys, upstream side included. It returns without
+// waiting; keys with no live connections are ignored.
+func (p *Plugin) DropSessions(keys ...string) {
+	p.send(pushMsg{
+		Method: "drop_sessions",
+		Params: pushParams{
+			Sessions: keys,
+		},
+	})
 }
 
 // SetTargets pushes a flat target list for the given route.
@@ -256,6 +283,9 @@ func (p *Plugin) hooks() []string {
 	if p.onDisc != nil {
 		h = append(h, "on_disconnect")
 	}
+	if p.onUsage != nil {
+		h = append(h, "on_usage")
+	}
 	return h
 }
 
@@ -305,6 +335,7 @@ type pushParams struct {
 	DownloadMbps float64             `json:"download_mbps,omitempty"`
 	UploadMbps   float64             `json:"upload_mbps,omitempty"`
 	GroupKey     string              `json:"group_key,omitempty"`
+	Sessions     []string            `json:"sessions,omitempty"`
 }
 
 type logMsg struct {

@@ -99,6 +99,7 @@ type Response struct {
 	RewritePath string            `msgpack:"rp,omitempty" json:"rewrite_path,omitempty"`
 	Group       string            `msgpack:"gr,omitempty" json:"group,omitempty"`
 	Target      string            `msgpack:"tg,omitempty" json:"target,omitempty"`
+	Session     string            `msgpack:"se,omitempty" json:"session,omitempty"`
 }
 
 // UpstreamResponse carries upstream response context for on_response hooks.
@@ -125,9 +126,10 @@ type ConnRequest struct {
 
 // ConnResponse is the plugin's verdict for an on_connect hook.
 type ConnResponse struct {
-	Allow  bool   `msgpack:"ok" json:"allow"`
-	Group  string `msgpack:"gr,omitempty" json:"group,omitempty"`
-	Target string `msgpack:"tg,omitempty" json:"target,omitempty"`
+	Allow   bool   `msgpack:"ok" json:"allow"`
+	Group   string `msgpack:"gr,omitempty" json:"group,omitempty"`
+	Target  string `msgpack:"tg,omitempty" json:"target,omitempty"`
+	Session string `msgpack:"se,omitempty" json:"session,omitempty"`
 }
 
 // DisconnectEvent carries connection statistics for on_disconnect hooks.
@@ -138,6 +140,22 @@ type DisconnectEvent struct {
 	BytesRx    int64  `msgpack:"rx" json:"bytes_rx"`
 	BytesTx    int64  `msgpack:"tx" json:"bytes_tx"`
 	DurationMs int64  `msgpack:"ms" json:"duration_ms"`
+	Session    string `msgpack:"se,omitempty" json:"session,omitempty"`
+}
+
+// UsageReport carries the bytes each session moved since the previous report,
+// for on_usage hooks.
+type UsageReport struct {
+	TimestampMs int64          `msgpack:"ts" json:"timestamp_ms"`
+	Sessions    []SessionUsage `msgpack:"u" json:"sessions"`
+}
+
+// SessionUsage is the traffic of one session on one route within a report.
+type SessionUsage struct {
+	RouteID string `msgpack:"r" json:"route_id"`
+	Session string `msgpack:"se" json:"session"`
+	BytesRx int64  `msgpack:"rx" json:"bytes_rx"`
+	BytesTx int64  `msgpack:"tx" json:"bytes_tx"`
 }
 
 // SpeedLimit defines bandwidth caps in Mbps.
@@ -157,6 +175,7 @@ const (
 	HookResponse   HookType = 2
 	HookConnect    HookType = 3
 	HookDisconnect HookType = 4
+	HookUsage      HookType = 5
 )
 
 // Envelope wraps all socket messages with a type discriminator.

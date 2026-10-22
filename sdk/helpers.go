@@ -106,6 +106,17 @@ func WithTarget(target string) Option {
 	}
 }
 
+// WithSession tags the request's stream with an opaque session key, such as
+// an account ID. prox keeps the key until the stream ends (a whole WebSocket,
+// upgrade, CONNECT tunnel or HTTP/2 stream), reports its traffic to OnUsage
+// and DisconnectEvent, and closes it on DropSessions. The key is independent
+// of the WithSpeedLimit group key.
+func WithSession(key string) Option {
+	return func(r *Response) {
+		r.Session = key
+	}
+}
+
 // ConnOption configures a ConnResponse.
 type ConnOption func(*ConnResponse)
 
@@ -136,6 +147,14 @@ func WithConnGroup(group string) ConnOption {
 func WithConnTarget(target string) ConnOption {
 	return func(r *ConnResponse) {
 		r.Target = target
+	}
+}
+
+// WithConnSession tags the connection with an opaque session key for its whole
+// lifetime, with the same meaning as WithSession.
+func WithConnSession(key string) ConnOption {
+	return func(r *ConnResponse) {
+		r.Session = key
 	}
 }
 
