@@ -204,7 +204,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		serveTunnel(w, r, p.target, p.headers, p.timeout)
 		return
 	}
-	if p.fast != nil {
+	// The fast path strips Upgrade; ReverseProxy performs generic protocol switches.
+	if p.fast != nil && !headerContains(r.Header, "Connection", "upgrade") {
 		p.fast.ServeHTTP(w, r)
 		return
 	}
