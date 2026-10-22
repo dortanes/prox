@@ -23,6 +23,7 @@ Routes can distribute requests across multiple upstream targets using a `balance
 | `type`     | string   | ✓        | Balancing strategy: `"roundrobin"`, `"random"`, or `"leastconn"` |
 | `targets`  | string[] | ✓        | List of upstream addresses                                       |
 | `fallback` | bool     |          | Pick a random target from all groups when the key has no match   |
+| `eject`    | duration |          | How long a target that refused a connection is skipped. Default `"10s"`; `"0s"` disables [ejection](#failed-targets) |
 
 ## Strategies
 
@@ -91,6 +92,32 @@ The `leastconn` strategy tracks active connections per target. A connection is c
 }
 ```
 
+## Failed Targets
+
+When prox cannot connect to the selected target (connection refused, dial timeout, no route to host), nothing of the request has reached the upstream yet. prox then:
+
+1. **Ejects the target.** The balancer skips it for the `eject` cool-down, then offers it again. prox logs one warning when a target is ejected and one info line when it is readmitted.
+2. **Retries the request** on another target of the same group (the same key for [grouped targets](#fallback)) that this request has not tried yet. Once every target of the group has failed, the request fails as it would without retries.
+
+```json5
+{
+  match: { domain: "*.**" },
+  balancer: {
+    type: "leastconn",
+    targets: ["10.0.1.1:3505", "10.0.1.2:3505"],
+    eject: "30s",   // skip a refusing target for 30 seconds
+  },
+  action: {
+    type: "proxy",
+    upstream: "http://{target}",
+  },
+}
+```
+
+Retries apply to every request a `proxy` action sends to a balanced `{target}`: plain HTTP and HTTP/2, WebSocket and other upgrades, `stream` tunnels, CONNECT, and forward-proxy requests. A request is never retried once prox has started sending it, so an upstream that accepts the connection and then fails is handled as before. A target pinned by a plugin with [`sdk.WithTarget`](../plugins/sdk.md#per-request-target-pinning) is ejected but not replaced. L4 `pass` routes do not retry.
+
+When every target of a group is ejected, the group counts as empty: `fallback: true` picks a target from another group, and the action's [`fallback`](actions.md) handles the request when no target is left. Pushing a new target list clears the ejection of targets that are no longer in it; config reloads start with no target ejected.
+
 ## Fallback
 
 When using [plugins](../plugins/index.md) with grouped targets (`SetGroupedTargets` / `SetActionGroupedTargets`), the balancer normally returns an empty result if the requested key has no matching group. The key comes from the domain wildcard capture, unless the plugin's `on_request` hook overrides it with [`sdk.WithGroup`](../plugins/sdk.md#per-request-group-selection), or bypasses the choice altogether with [`sdk.WithTarget`](../plugins/sdk.md#per-request-target-pinning). With `fallback: true`, the balancer instead picks a **random target from all groups**.
@@ -116,6 +143,7 @@ Fallback activates when:
 
 - The key has **no matching group** in the grouped target map
 - The key's group exists but has an **empty target list**
+- Every target of the key's group is [ejected](#failed-targets)
 
 Fallback does **not** activate when:
 
