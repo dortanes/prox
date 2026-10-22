@@ -3,12 +3,12 @@
 The Go SDK (`github.com/dortanes/prox/sdk`) provides a callback-based API for building plugins. It handles all transport details — stdin/stdout JSON messaging, Unix socket msgpack framing, and the `ready` handshake.
 
 !!! note "Windows"
-    `OnConfigure` and push APIs can run over stdin/stdout on Windows. `OnRequest`, `OnResponse`, `OnConnect`, and `OnDisconnect` require Unix domain sockets and are supported on Linux and macOS.
+    `OnConfigure` and push APIs can run over stdin/stdout on Windows. `OnRequest`, `OnResponse`, `OnConnect`, `OnDisconnect`, and `OnUsage` require Unix domain sockets and are supported on Linux and macOS.
 
 ## Installation
 
 ```bash
-go get github.com/dortanes/prox/sdk@v1.0.0
+go get github.com/dortanes/prox/sdk@latest
 ```
 
 ## Quick Start
@@ -137,6 +137,37 @@ p.OnDisconnect(func(event *sdk.DisconnectEvent) {
 | `BytesRx`    | `int64`  | Bytes received from client (upload)     |
 | `BytesTx`    | `int64`  | Bytes transmitted to client (download)  |
 | `DurationMs` | `int64`  | Connection duration in milliseconds     |
+| `Session`    | `string` | Session key, empty when none was set    |
+
+`OnDisconnect` fires for HTTP requests and streams. L4 `pass` connections are reported through `OnUsage` only.
+
+### `OnUsage(func(report *UsageReport))` — Fire-and-Forget
+
+Called every `usage_interval` with the bytes each session moved on the plugin's routes since the previous report, including connections that are still open. See [Sessions and usage](#sessions-and-usage).
+
+```go
+p.OnUsage(func(r *sdk.UsageReport) {
+    for _, u := range r.Sessions {
+        billing.Add(u.Session, u.BytesRx+u.BytesTx)
+    }
+})
+```
+
+**UsageReport fields:**
+
+| Field         | Type             | Description                        |
+| ------------- | ---------------- | ---------------------------------- |
+| `TimestampMs` | `int64`          | Report time in Unix milliseconds   |
+| `Sessions`    | `[]SessionUsage` | One entry per session and route    |
+
+**SessionUsage fields:**
+
+| Field     | Type     | Description                                    |
+| --------- | -------- | ---------------------------------------------- |
+| `RouteID` | `string` | Route identifier (`service:routeIndex`)        |
+| `Session` | `string` | Session key                                    |
+| `BytesRx` | `int64`  | Bytes received from the client since last time |
+| `BytesTx` | `int64`  | Bytes sent to the client since last time       |
 
 ## Request Fields
 
@@ -183,6 +214,7 @@ sdk.WithCleanQuery()                  // Remove query string from upstream reque
 sdk.WithRewritePath(path)             // Override upstream request path
 sdk.WithGroup(group)                  // Pick the balancer target from a named group
 sdk.WithTarget(target)                // Pin one exact target (wins over WithGroup)
+sdk.WithSession(key)                  // Tag the stream with a session key
 ```
 
 ### Response Modifications
@@ -204,7 +236,68 @@ sdk.RejectConn()                      // Close TCP connection
 
 sdk.WithConnGroup(group)              // Pick the balancer target from a named group
 sdk.WithConnTarget(target)            // Pin one exact target (wins over WithConnGroup)
+sdk.WithConnSession(key)              // Tag the connection with a session key
 ```
+
+## Sessions and Usage
+
+A session key is an opaque string, such as an account ID, that a plugin attaches to a connection from `OnRequest` with `sdk.WithSession` or from `OnConnect` with `sdk.WithConnSession`. prox keeps it until that connection or stream ends:
+
+- an HTTP request, including a forward-proxy request;
+- a WebSocket or any other HTTP/1.1 upgrade, for the life of the upgraded connection;
+- a CONNECT tunnel over HTTP/1.1 or HTTP/2;
+- one HTTP/2 stream (other streams on the same connection carry their own keys);
+- an L4 `pass` connection.
+
+The key is separate from the group key of `sdk.WithSpeedLimit`; pass the same value to both to limit and meter one account together.
+
+```go
+p.OnRequest(func(req *sdk.Request) *sdk.Response {
+    acct := lookupAccount(req.Header("Authorization"))
+    if acct == "" {
+        return sdk.Deny(401, "Unauthorized")
+    }
+    return sdk.Allow(sdk.WithSession(acct), sdk.WithSpeedLimit(50, 10, acct))
+})
+```
+
+### What is counted
+
+`BytesRx` counts bytes from the client to prox and `BytesTx` bytes from prox to the client:
+
+| Connection | Counted bytes |
+| ---------- | ------------- |
+| HTTP request or HTTP/2 stream, CONNECT over HTTP/2 | Request and response bodies |
+| WebSocket, other upgrades, CONNECT over HTTP/1.1 | Every byte after the request headers, including the response that switches protocols |
+| L4 `pass` | Every TCP byte, TLS records included |
+
+Connections without a session key are left out of usage reports. prox counts bytes only on routes where a bound plugin subscribes to `OnUsage` or `OnDisconnect`.
+
+### Accounting model
+
+Usage reports are the billing source. Every byte of a session appears in exactly one report: a report holds the bytes moved since the previous one, and the last bytes of a closed connection arrive in the first report after it closes. A plugin that sums the reports per session gets the exact total, with no reconciliation.
+
+`DisconnectEvent` repeats the totals of a stream that already went into usage reports. Treat it as informational and never add its bytes to the sum.
+
+A report the plugin cannot receive, for example while it restarts, is kept and its bytes are sent with the next report. When prox shuts down or the plugin is removed from the config, prox sends a final report first.
+
+The interval is set per plugin in the prox config:
+
+```json5
+plugins: {
+  auth: { path: "./plugins/auth", usage_interval: "30s" }  // default: 15s
+}
+```
+
+### Dropping sessions
+
+`p.DropSessions(keys...)` closes every connection and stream on this prox instance that carries one of the keys, upstream side included. It returns at once; prox closes the connections in the background. Keys with no live connections are ignored.
+
+```go
+p.DropSessions("acct-1842")
+```
+
+An HTTP/1.1 client sees its connection close. On HTTP/2 only the tagged stream is reset. New requests from the same client go through `OnRequest` again, so deny them there once access is revoked.
 
 ## Push API
 
@@ -324,3 +417,4 @@ When multiple limits apply (config, push, response), the most restrictive value 
 | `SetActionGroupedTargets(action, groups)` | Push grouped targets for all routes using the given action   |
 | `SetSpeedLimit(routeID, limit)`           | Push speed limit for a specific route (or `"*"` for all)     |
 | `SetActionSpeedLimit(action, limit)`      | Push speed limit for all routes using the given action       |
+| `DropSessions(keys...)`                   | Close every connection carrying one of the session keys      |

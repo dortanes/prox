@@ -18,7 +18,7 @@ Plugins are external executables that extend prox at runtime. They dynamically m
 |------|-------|-----------|----------|
 | Push-only | `OnConfigure` | stdin/stdout | Target discovery, DNS resolution |
 | Request-response | `OnRequest`, `OnResponse`, `OnConnect` | Unix socket (msgpack) | Auth, rate limiting, header injection |
-| Fire-and-forget | `OnDisconnect` | Unix socket (msgpack) | Connection statistics, usage tracking |
+| Fire-and-forget | `OnDisconnect`, `OnUsage` | Unix socket (msgpack) | Connection statistics, per-session usage reports |
 | Hybrid | All | Both | Full middleware + discovery |
 
 ## Building Plugins
@@ -111,6 +111,7 @@ Plugins from all levels are merged per route in this order: **service → action
 | `plugins` | `[]string` | — | Plugin aliases or literal paths. Available on routes, services, and actions. |
 | `plugin_timeout` | `duration` | `5s` | Per-request timeout for plugin hook calls. Route-level only. |
 | `autostart` | `bool` | `false` | Start plugin at proxy startup without route bindings. |
+| `usage_interval` | `duration` | `15s` | How often the plugin receives `OnUsage` reports. Set in the `plugins` block. |
 
 ### Rules
 

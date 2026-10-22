@@ -39,12 +39,12 @@ Sent after `configure` to declare request-response capabilities. This instructs 
   "method": "ready",
   "params": {
     "socket": "/tmp/prox-p-12345.sock",
-    "hooks": ["on_request", "on_response", "on_connect", "on_disconnect"]
+    "hooks": ["on_request", "on_response", "on_connect", "on_disconnect", "on_usage"]
   }
 }
 ```
 
-Valid hook names: `on_request`, `on_response`, `on_connect`, `on_disconnect`.
+Valid hook names: `on_request`, `on_response`, `on_connect`, `on_disconnect`, `on_usage`. prox ignores names it does not know, so a plugin can declare a hook that an older prox lacks.
 
 ### Plugin → Prox: `set_targets`
 
@@ -136,6 +136,21 @@ Pushes speed limits to route connections. Supports the same targeting as `set_ta
 | `upload_mbps` | `number` | Upload bandwidth cap in Mbps |
 | `group_key` | `string` | When set, updates the rate for active group buckets with this key |
 
+### Plugin → Prox: `drop_sessions`
+
+Closes every connection and stream on this prox instance that carries one of the session keys, upstream side included. prox does not reply; keys with no live connections are ignored.
+
+```json
+{
+  "method": "drop_sessions",
+  "params": {
+    "sessions": ["acct-1842", "acct-2210"]
+  }
+}
+```
+
+An HTTP/1.1 client sees its connection close. On HTTP/2 only the stream is reset; other streams on the same connection continue.
+
 ## Unix Socket — Request-Response Hooks
 
 The socket uses **length-prefixed msgpack frames**:
@@ -150,10 +165,20 @@ Each frame is an `Envelope` containing a hook type and the hook-specific data:
 
 ```
 Envelope {
-  hook: string    // "on_request", "on_response", "on_connect", "on_disconnect"
-  data: bytes     // msgpack-encoded hook payload
+  t: uint8     // hook type
+  d: bytes     // msgpack-encoded hook payload
 }
 ```
+
+| Hook | `t` | Reply |
+|------|-----|-------|
+| `on_request` | `1` | Yes |
+| `on_response` | `2` | Yes |
+| `on_connect` | `3` | Yes |
+| `on_disconnect` | `4` | No |
+| `on_usage` | `5` | No |
+
+prox sends a hook only to plugins that declared it in `ready`. Payloads gain keys over time: skip keys you do not know, and treat a missing key as its zero value.
 
 ### `on_request`
 
@@ -193,6 +218,9 @@ Envelope {
 | RewritePath | `rp` | `string` |
 | Group | `gr` | `string` |
 | Target | `tg` | `string` |
+| Session | `se` | `string` |
+
+`se` tags the stream with a session key for `on_usage`, `on_disconnect` and `drop_sessions`. When several plugins return one, the last non-empty key wins.
 
 **SpeedLimit object (`sp`):**
 
@@ -243,6 +271,7 @@ ResponsePair {
 | Allow | `ok` | `bool` |
 | Group | `gr` | `string` |
 | Target | `tg` | `string` |
+| Session | `se` | `string` |
 
 ### `on_disconnect`
 
@@ -258,6 +287,29 @@ Fire-and-forget — **no response expected**. prox writes the frame and does not
 | BytesRx | `rx` | `int64` |
 | BytesTx | `tx` | `int64` |
 | DurationMs | `ms` | `int64` |
+| Session | `se` | `string` (empty when the stream had no key) |
+
+### `on_usage`
+
+Fire-and-forget, sent every `usage_interval` (default `15s`). Each entry holds the bytes one session moved on one route since the previous report. See [Sessions and usage](sdk.md#sessions-and-usage) for what is counted.
+
+**Request payload:**
+
+| Field | msgpack key | Type |
+|-------|-------------|------|
+| TimestampMs | `ts` | `int64` (Unix milliseconds) |
+| Sessions | `u` | `[]SessionUsage` |
+
+**SessionUsage:**
+
+| Field | msgpack key | Type |
+|-------|-------------|------|
+| RouteID | `r` | `string` |
+| Session | `se` | `string` |
+| BytesRx | `rx` | `int64` |
+| BytesTx | `tx` | `int64` |
+
+A large report is split across several frames with the same timestamp.
 
 ## Minimal Plugin Example (Bash)
 
