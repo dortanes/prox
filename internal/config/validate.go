@@ -324,6 +324,9 @@ func (v *validator) validatePluginsRegistry() {
 		if plugin.Path == "" {
 			v.addIssue("plugin %q: path is required", name)
 		}
+		if plugin.UsageInterval.Duration < 0 {
+			v.addIssue("plugin %q: usage_interval must not be negative", name)
+		}
 	}
 }
 

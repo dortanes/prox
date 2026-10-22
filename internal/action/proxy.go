@@ -311,6 +311,7 @@ func serveForwardProxy(w http.ResponseWriter, r *http.Request, target *url.URL, 
 		return
 	}
 	defer upstream.Close()
+	defer closeOnCancel(r.Context(), upstream)()
 
 	// Clone the request and set RequestURI to the full absolute URL
 	// so the upstream proxy receives a proper forward proxy request line
@@ -381,11 +382,9 @@ func serveForwardProxy(w http.ResponseWriter, r *http.Request, target *url.URL, 
 	bufp := copyBufPool.Get().(*[]byte)
 	buf := *bufp
 	defer copyBufPool.Put(bufp)
-	var totalTx int64
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
-			totalTx += int64(n)
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				break
 			}
@@ -396,9 +395,6 @@ func serveForwardProxy(w http.ResponseWriter, r *http.Request, target *url.URL, 
 		if readErr != nil {
 			break
 		}
-	}
-	if cs := ConnStatsFromContext(r.Context()); cs != nil {
-		cs.AddTx(totalTx)
 	}
 }
 

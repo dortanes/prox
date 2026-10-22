@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoad_ValidConfig(t *testing.T) {
@@ -133,6 +134,38 @@ func TestLoad_PluginsRegistryValidation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "plugin \"auth\": path is required") {
 		t.Errorf("error should mention missing path, got: %v", err)
+	}
+}
+
+func TestLoad_PluginUsageInterval(t *testing.T) {
+	raw := func(interval string) string {
+		return `{
+			"plugins": {
+				"auth": { "path": "/path/to/auth", "usage_interval": "` + interval + `" }
+			},
+			"services": {
+				"web": {
+					"listen": ":80",
+					"routes": [{ "match": { "path": "/" }, "action": "a" }]
+				}
+			},
+			"actions": {
+				"a": { "type": "proxy", "upstream": "localhost:80" }
+			}
+		}`
+	}
+
+	cfg, err := Load([]byte(raw("30s")))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Plugins["auth"].UsageInterval.Duration; got != 30*time.Second {
+		t.Errorf("usage_interval = %v, want 30s", got)
+	}
+
+	_, err = Load([]byte(raw("-1s")))
+	if err == nil || !strings.Contains(err.Error(), "usage_interval must not be negative") {
+		t.Errorf("expected negative usage_interval error, got: %v", err)
 	}
 }
 

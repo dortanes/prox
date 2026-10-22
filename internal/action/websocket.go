@@ -68,6 +68,7 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 		return
 	}
 	defer upstream.Close()
+	defer closeOnCancel(r.Context(), upstream)()
 
 	// Rewrite the request URL path for upstream.
 	outReq := r.Clone(r.Context())
@@ -111,6 +112,7 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 		return
 	}
 	defer client.Close()
+	defer closeOnCancel(r.Context(), client)()
 
 	// Read the upstream response and forward to client.
 	upstreamBuf := bufioReaderPool.Get().(*bufio.Reader)
@@ -155,11 +157,9 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	var uploadBytes, downloadBytes int64
-
 	go func() {
 		defer wg.Done()
-		uploadBytes, _ = io.Copy(upstream, upReader)
+		_, _ = io.Copy(upstream, upReader)
 		if tc, ok := upstream.(interface{ CloseWrite() error }); ok {
 			_ = tc.CloseWrite()
 		}
@@ -167,16 +167,11 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 
 	go func() {
 		defer wg.Done()
-		downloadBytes, _ = io.Copy(client, downReader)
+		_, _ = io.Copy(client, downReader)
 		if tc, ok := client.(interface{ CloseWrite() error }); ok {
 			_ = tc.CloseWrite()
 		}
 	}()
 
 	wg.Wait()
-
-	if cs := ConnStatsFromContext(r.Context()); cs != nil {
-		cs.AddRx(uploadBytes)
-		cs.AddTx(downloadBytes)
-	}
 }

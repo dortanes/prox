@@ -3,27 +3,34 @@ package plugin
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/dortanes/prox/internal/balancer"
+	"github.com/dortanes/prox/internal/conntrack"
 	"github.com/dortanes/prox/internal/throttle"
 )
 
 const (
-	restartBaseDelay = 1 * time.Second
-	restartMaxDelay  = 30 * time.Second
+	restartBaseDelay     = 1 * time.Second
+	restartMaxDelay      = 30 * time.Second
+	defaultUsageInterval = 15 * time.Second
+
+	// maxUsageFrame keeps usage frames well under the 1 MB frame limit.
+	maxUsageFrame = 512 << 10
 )
 
 // Binding associates a route with a plugin process and its balancer.
 type Binding struct {
-	Name     string // human-readable alias from config
-	RouteID  string
-	Plugin   string // absolute path to plugin binary
-	Match    *MatchInfo
-	Balancer balancer.Balancer
-	Timeout  time.Duration // per-request plugin call timeout
+	Name          string // human-readable alias from config
+	RouteID       string
+	Plugin        string // absolute path to plugin binary
+	Match         *MatchInfo
+	Balancer      balancer.Balancer
+	Timeout       time.Duration // per-request plugin call timeout
+	UsageInterval time.Duration // on_usage report interval for the plugin (0 = default)
 }
 
 // RouteInfo describes a route's balancer and action for global target pushes.
@@ -66,6 +73,7 @@ type Manager struct {
 	index        atomic.Pointer[hookIndex]  // lock-free hot-path lookup
 	speeds       atomic.Pointer[speedIndex] // lock-free speed limit lookup
 	groupBuckets *throttle.GroupRegistry    // shared group speed buckets
+	sessions     *conntrack.Registry        // live connections carrying a session key
 	disconnects  chan disconnectMsg         // buffered fire-and-forget channel
 }
 
@@ -83,6 +91,10 @@ type managed struct {
 	restart int      // consecutive restart count for backoff
 	caller  *Caller  // non-nil when plugin declared socket hooks
 	hooks   []string // declared hook capabilities
+
+	// Set while the plugin subscribes to on_usage; the meter outlives restarts.
+	meter     *conntrack.Meter
+	stopUsage context.CancelFunc
 }
 
 // NewManager creates a plugin manager. Call Start() to spawn processes.
@@ -90,6 +102,7 @@ func NewManager() *Manager {
 	return &Manager{
 		processes:    make(map[string]*managed),
 		groupBuckets: throttle.NewGroupRegistry(),
+		sessions:     conntrack.NewRegistry(),
 		disconnects:  make(chan disconnectMsg, 256),
 	}
 }
@@ -97,6 +110,11 @@ func NewManager() *Manager {
 // GroupBuckets returns the shared group speed bucket registry.
 func (m *Manager) GroupBuckets() *throttle.GroupRegistry {
 	return m.groupBuckets
+}
+
+// Sessions returns the registry of live connections carrying a session key.
+func (m *Manager) Sessions() *conntrack.Registry {
+	return m.sessions
 }
 
 // Configure sets the current route-to-plugin bindings and global route info.
@@ -207,6 +225,7 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 			slog.Debug("plugin stopped",
 				"plugin", mg.name,
 			)
+			m.endUsageLocked(mg, true)
 			if mg.caller != nil {
 				mg.caller.Close()
 			}
@@ -277,6 +296,7 @@ func (m *Manager) Stop() {
 
 	m.mu.Lock()
 	for _, mg := range m.processes {
+		m.endUsageLocked(mg, true)
 		if mg.caller != nil {
 			mg.caller.Close()
 		}
@@ -361,6 +381,9 @@ func (m *Manager) OnRequest(ctx context.Context, routeID string, req *RequestInf
 		if result.Target != "" {
 			merged.Target = result.Target
 		}
+		if result.Session != "" {
+			merged.Session = result.Session
+		}
 	}
 
 	return merged, nil
@@ -425,6 +448,9 @@ func (m *Manager) OnConnect(ctx context.Context, routeID string, conn *ConnInfo)
 		}
 		if result.Target != "" {
 			merged.Target = result.Target
+		}
+		if result.Session != "" {
+			merged.Session = result.Session
 		}
 	}
 
@@ -562,6 +588,14 @@ func (m *Manager) handlePush(mg *managed, push Push) {
 	case MethodLog:
 		handleLog(mg, push)
 
+	case MethodDropSessions:
+		n := m.sessions.Drop(push.Params.Sessions...)
+		slog.Debug("plugin dropped sessions",
+			"plugin", mg.name,
+			"sessions", len(push.Params.Sessions),
+			"connections", n,
+		)
+
 	default:
 		slog.Warn("plugin unknown push method",
 			"plugin", mg.name,
@@ -599,18 +633,19 @@ func (m *Manager) handleReady(mg *managed, push Push) {
 		return
 	}
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	mg.hooks = push.Params.Hooks
 
 	timeout := defaultCallTimeout
 	// Use the first matching binding's timeout if set.
-	m.mu.Lock()
 	for _, b := range m.bindings {
 		if b.Plugin == mg.path && b.Timeout > 0 {
 			timeout = b.Timeout
 			break
 		}
 	}
-	m.mu.Unlock()
 
 	// Close old caller if re-readying after restart.
 	if mg.caller != nil {
@@ -619,10 +654,16 @@ func (m *Manager) handleReady(mg *managed, push Push) {
 
 	mg.caller = NewCaller(push.Params.Socket, defaultPoolSize, timeout)
 
+	usage := slices.Contains(mg.hooks, HookOnUsage)
+	switch {
+	case usage && mg.meter == nil:
+		m.startUsageLocked(mg)
+	case !usage && mg.meter != nil:
+		m.endUsageLocked(mg, false)
+	}
+
 	// Rebuild the hot-path index now that this plugin has declared its hooks.
-	m.mu.Lock()
 	m.rebuildIndexLocked()
-	m.mu.Unlock()
 
 	slog.Debug("plugin ready",
 		"plugin", mg.name,

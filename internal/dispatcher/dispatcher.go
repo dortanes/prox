@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dortanes/prox/internal/balancer"
+	"github.com/dortanes/prox/internal/conntrack"
 	"github.com/dortanes/prox/internal/plugin"
 )
 
@@ -168,7 +169,7 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 
 		if route.IsPass {
 			// Plugin on_connect gate.
-			var pluginGroup, pluginTarget string
+			var pluginGroup, pluginTarget, session string
 			if d.plugins != nil && d.plugins.HasHook(route.RouteID, plugin.HookOnConnect) {
 				matches, globTail := matchDomainCaptures(route.DomainSegments, route.DomainGlob, sniLower)
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -191,6 +192,7 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 				}
 				pluginGroup = res.Group
 				pluginTarget = res.Target
+				session = res.Session
 			}
 
 			// Resolve upstream — static or balanced.
@@ -240,7 +242,7 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 				"upstream", upstream,
 				"remote", conn.RemoteAddr(),
 			)
-			d.relayPass(conn, buf, upstream)
+			d.relayPass(conn, buf, upstream, route.RouteID, session)
 
 			// Signal the balancer after relay completes.
 			if route.Bal != nil && tracked && target != "" {
@@ -288,7 +290,10 @@ func (r *Route) selectTarget(sniLower, group string) (string, bool) {
 	return kb.NextKeyed(key), true
 }
 
-func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream string) {
+// relayPass relays a pass connection. A connection carrying a session key is
+// registered so a plugin can drop it, and metered when the route has on_usage
+// subscribers.
+func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream, routeID, session string) {
 	defer client.Close()
 
 	up, err := net.DialTimeout("tcp", upstream, upstreamDialTimeout)
@@ -308,6 +313,20 @@ func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream str
 	defer d.untrackConn(client)
 	defer d.untrackConn(up)
 
+	var counter *conntrack.Counter
+	if session != "" {
+		if d.plugins.HasHook(routeID, plugin.HookOnUsage) {
+			counter = &conntrack.Counter{}
+			counter.AddRx(int64(len(peekedBytes)))
+		}
+		sessions := d.plugins.Sessions()
+		tracked := sessions.Open(routeID, session, counter, func() {
+			client.Close()
+			up.Close()
+		})
+		defer sessions.Close(tracked)
+	}
+
 	// Replay the peeked ClientHello bytes to the upstream.
 	if _, err := up.Write(peekedBytes); err != nil {
 		slog.Warn("l4 upstream write failed",
@@ -317,7 +336,7 @@ func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream str
 		return
 	}
 
-	_, _ = Relay(client, up)
+	_, _ = Relay(counter.Conn(client), up)
 }
 
 // matchDomain checks if host matches the pattern segments.

@@ -48,6 +48,7 @@ func serveTunnel(w http.ResponseWriter, r *http.Request, target *url.URL, header
 		return
 	}
 	defer upstream.Close()
+	defer closeOnCancel(r.Context(), upstream)()
 
 	// Build the outgoing request preserving the original path and body.
 	outReq := r.Clone(r.Context())
@@ -118,11 +119,9 @@ func serveTunnel(w http.ResponseWriter, r *http.Request, target *url.URL, header
 	bufp := copyBufPool.Get().(*[]byte)
 	buf := *bufp
 	defer copyBufPool.Put(bufp)
-	var totalTx int64
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
-			totalTx += int64(n)
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				break
 			}
@@ -134,9 +133,6 @@ func serveTunnel(w http.ResponseWriter, r *http.Request, target *url.URL, header
 			break
 		}
 	}
-	if cs := ConnStatsFromContext(r.Context()); cs != nil {
-		cs.AddTx(totalTx)
-	}
 }
 
 // schemeOf returns "https" if the request used TLS, "http" otherwise.
@@ -145,6 +141,17 @@ func schemeOf(r *http.Request) string {
 		return "https"
 	}
 	return "http"
+}
+
+// closeOnCancel closes conns when ctx is canceled, which unblocks relays when
+// the client goes away or a plugin drops the session. Call the returned
+// function to detach it once the relay is over.
+func closeOnCancel(ctx context.Context, conns ...io.Closer) func() bool {
+	return context.AfterFunc(ctx, func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
 }
 
 // serveConnect establishes a bidirectional TCP tunnel for HTTP CONNECT requests.
@@ -250,21 +257,21 @@ func serveConnectH1(w http.ResponseWriter, ctx context.Context, upstream net.Con
 		return
 	}
 
+	defer closeOnCancel(ctx, clientConn, upstream)()
+
+	// Waiting for the upload side keeps its byte counts inside the request.
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		defer upstream.Close()
 		defer clientConn.Close()
-		rx, _ := io.Copy(upstream, clientBuf)
-		if cs := ConnStatsFromContext(ctx); cs != nil {
-			cs.AddRx(rx)
-		}
+		_, _ = io.Copy(upstream, clientBuf)
 	}()
 
-	defer upstream.Close()
-	defer clientConn.Close()
-	tx, _ := io.Copy(clientConn, upstream)
-	if cs := ConnStatsFromContext(ctx); cs != nil {
-		cs.AddTx(tx)
-	}
+	_, _ = io.Copy(clientConn, upstream)
+	upstream.Close()
+	clientConn.Close()
+	<-done
 }
 
 // serveConnectH2 handles CONNECT over HTTP/2 using the framed stream.
@@ -280,22 +287,18 @@ func serveConnectH2(w http.ResponseWriter, r *http.Request, upstream net.Conn) {
 		defer upstream.Close()
 		bufp := copyBufPool.Get().(*[]byte)
 		defer copyBufPool.Put(bufp)
-		rx, _ := io.CopyBuffer(upstream, r.Body, *bufp)
-		if cs := ConnStatsFromContext(r.Context()); cs != nil {
-			cs.AddRx(rx)
-		}
+		_, _ = io.CopyBuffer(upstream, r.Body, *bufp)
 	}()
 
 	defer upstream.Close()
+	defer closeOnCancel(r.Context(), upstream)()
 	flusher, canFlush := w.(http.Flusher)
 	bufp := copyBufPool.Get().(*[]byte)
 	buf := *bufp
 	defer copyBufPool.Put(bufp)
-	var totalTx int64
 	for {
 		n, readErr := upstream.Read(buf)
 		if n > 0 {
-			totalTx += int64(n)
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				break
 			}
@@ -306,8 +309,5 @@ func serveConnectH2(w http.ResponseWriter, r *http.Request, upstream net.Conn) {
 		if readErr != nil {
 			break
 		}
-	}
-	if cs := ConnStatsFromContext(r.Context()); cs != nil {
-		cs.AddTx(totalTx)
 	}
 }

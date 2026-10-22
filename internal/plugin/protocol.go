@@ -3,7 +3,7 @@
 // Plugins are external executables that communicate with prox over
 // stdin/stdout using line-delimited JSON messages for lifecycle events,
 // and over a Unix socket using length-prefixed msgpack frames for
-// request-response hooks (on_request, on_response, on_connect).
+// hooks (on_request, on_response, on_connect, on_disconnect, on_usage).
 package plugin
 
 import (
@@ -15,11 +15,12 @@ import (
 
 // Method constants for the stdin/stdout JSON protocol.
 const (
-	MethodConfigure  = "configure"
-	MethodSetTargets = "set_targets"
-	MethodSetSpeed   = "set_speed"
-	MethodReady      = "ready"
-	MethodLog        = "log"
+	MethodConfigure    = "configure"
+	MethodSetTargets   = "set_targets"
+	MethodSetSpeed     = "set_speed"
+	MethodReady        = "ready"
+	MethodLog          = "log"
+	MethodDropSessions = "drop_sessions"
 )
 
 // Hook names advertised by plugins.
@@ -28,6 +29,7 @@ const (
 	HookOnResponse   = "on_response"
 	HookOnConnect    = "on_connect"
 	HookOnDisconnect = "on_disconnect"
+	HookOnUsage      = "on_usage"
 )
 
 // HookType identifies the hook being invoked over the socket.
@@ -38,6 +40,7 @@ const (
 	HookTypeResponse   HookType = 2
 	HookTypeConnect    HookType = 3
 	HookTypeDisconnect HookType = 4
+	HookTypeUsage      HookType = 5
 )
 
 // Request is a message sent from prox to a plugin via stdin.
@@ -89,6 +92,9 @@ type PushParams struct {
 	Level   string `json:"level,omitempty"`
 	Message string `json:"message,omitempty"`
 	Args    []any  `json:"args,omitempty"`
+
+	// Session keys whose connections to close (only when Method == "drop_sessions").
+	Sessions []string `json:"sessions,omitempty"`
 }
 
 // --- Socket protocol types (msgpack) ---
@@ -132,6 +138,7 @@ type AuthorizeResult struct {
 	RewritePath string            `msgpack:"rp,omitempty"`
 	Group       string            `msgpack:"gr,omitempty"`
 	Target      string            `msgpack:"tg,omitempty"`
+	Session     string            `msgpack:"se,omitempty"`
 }
 
 // UpstreamResponseInfo carries upstream response context for on_response hooks.
@@ -164,9 +171,10 @@ type ConnInfo struct {
 
 // ConnResult is the plugin's verdict for an on_connect hook.
 type ConnResult struct {
-	Allow  bool   `msgpack:"ok"`
-	Group  string `msgpack:"gr,omitempty"`
-	Target string `msgpack:"tg,omitempty"`
+	Allow   bool   `msgpack:"ok"`
+	Group   string `msgpack:"gr,omitempty"`
+	Target  string `msgpack:"tg,omitempty"`
+	Session string `msgpack:"se,omitempty"`
 }
 
 // DisconnectInfo carries statistics for the on_disconnect hook.
@@ -177,6 +185,22 @@ type DisconnectInfo struct {
 	BytesRx    int64  `msgpack:"rx"`
 	BytesTx    int64  `msgpack:"tx"`
 	DurationMs int64  `msgpack:"ms"`
+	Session    string `msgpack:"se,omitempty"`
+}
+
+// UsageReport carries the bytes sessions moved since the previous report, for
+// the on_usage hook.
+type UsageReport struct {
+	TimestampMs int64          `msgpack:"ts"`
+	Sessions    []SessionUsage `msgpack:"u"`
+}
+
+// SessionUsage is the traffic of one session on one route within a report.
+type SessionUsage struct {
+	RouteID string `msgpack:"r"`
+	Session string `msgpack:"se"`
+	BytesRx int64  `msgpack:"rx"`
+	BytesTx int64  `msgpack:"tx"`
 }
 
 // SpeedLimit holds bandwidth caps from plugin responses.

@@ -40,8 +40,9 @@ type LoggingConfig struct {
 
 // Plugin defines global configuration for an external plugin.
 type Plugin struct {
-	Path      string `json:"path"`
-	Autostart bool   `json:"autostart,omitempty"` // start at proxy startup without route bindings
+	Path          string   `json:"path"`
+	Autostart     bool     `json:"autostart,omitempty"`      // start at proxy startup without route bindings
+	UsageInterval Duration `json:"usage_interval,omitempty"` // on_usage report interval (default: 15s)
 }
 
 // Service defines a single listener with its routing rules.

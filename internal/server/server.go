@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,6 +26,7 @@ import (
 	"github.com/dortanes/prox/internal/action"
 	bal "github.com/dortanes/prox/internal/balancer"
 	"github.com/dortanes/prox/internal/config"
+	"github.com/dortanes/prox/internal/conntrack"
 	"github.com/dortanes/prox/internal/dispatcher"
 	"github.com/dortanes/prox/internal/logger"
 	"github.com/dortanes/prox/internal/plugin"
@@ -1074,16 +1076,6 @@ var capturePool = sync.Pool{
 	New: func() any { return &logger.ResponseCapture{} },
 }
 
-// countingReaderPool reuses CountingReader for disconnect byte counting.
-var countingReaderPool = sync.Pool{
-	New: func() any { return &action.CountingReader{} },
-}
-
-// connStatsPool reuses ConnStats for hijacked-path byte accumulation.
-var connStatsPool = sync.Pool{
-	New: func() any { return &action.ConnStats{} },
-}
-
 func acquireCapture(w http.ResponseWriter) *logger.ResponseCapture {
 	c := capturePool.Get().(*logger.ResponseCapture)
 	c.Reset(w)
@@ -1191,6 +1183,7 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Plugin on_request gate.
 	var reqInfo *plugin.RequestInfo
 	var pluginSpeedLimit *plugin.SpeedLimit
+	var session string
 	useFallback := false
 	if h.plugins != nil {
 		mr := router.GetMatchResult(r)
@@ -1234,6 +1227,7 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				r.Header.Set(k, v)
 			}
 			pluginSpeedLimit = res.SpeedLimit
+			session = res.Session
 			if res.CleanQuery {
 				r.URL.RawQuery = ""
 			}
@@ -1282,34 +1276,15 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Disconnect hook setup — zero cost when not subscribed.
-	var cr *action.CountingReader
-	var cs *action.ConnStats
-	var hasDisconnect bool
-	var disconnectRouteID string
-	var disconnectTarget string
+	// Byte counting and session tracking; zero cost when not subscribed.
 	if h.plugins != nil {
-		mr := router.GetMatchResult(r)
-		if mr != nil {
-			disconnectRouteID = mr.RouteID(h.name)
-			disconnectTarget = mr.Target
-			hasDisconnect = h.plugins.HasHook(disconnectRouteID, plugin.HookOnDisconnect)
+		if mr := router.GetMatchResult(r); mr != nil {
+			var finish func()
+			w, r, finish = h.trackStream(w, r, mr.RouteID(h.name), mr.Target, session, start)
+			if finish != nil {
+				defer finish()
+			}
 		}
-	}
-	if hasDisconnect {
-		if !accessOn {
-			start = time.Now()
-		}
-		// Wrap r.Body with pooled counting reader for upload bytes.
-		cr = countingReaderPool.Get().(*action.CountingReader)
-		cr.Reset(r.Body)
-		r.Body = cr
-
-		// Inject ConnStats for hijacked paths (WebSocket, CONNECT).
-		cs = connStatsPool.Get().(*action.ConnStats)
-		atomic.StoreInt64(&cs.BytesRx, 0)
-		atomic.StoreInt64(&cs.BytesTx, 0)
-		r = r.WithContext(action.NewConnStatsContext(r.Context(), cs))
 	}
 
 	// Apply speed limiting.
@@ -1345,31 +1320,62 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	handler.ServeHTTP(w, r)
+}
 
-	// Fire disconnect notification after handler completes.
-	if hasDisconnect {
-		bytesRx := cr.N
-		bytesTx := int64(0)
-		if capture != nil {
-			bytesTx = capture.BytesOut()
-		}
-		if cs != nil {
-			bytesRx += cs.LoadRx()
-			bytesTx += cs.LoadTx()
-		}
-		h.plugins.OnDisconnect(disconnectRouteID, &plugin.DisconnectInfo{
-			RouteID:    disconnectRouteID,
-			Target:     disconnectTarget,
-			RemoteAddr: r.RemoteAddr,
-			BytesRx:    bytesRx,
-			BytesTx:    bytesTx,
-			DurationMs: time.Since(start).Milliseconds(),
-		})
+// errSessionDropped cancels a stream whose session a plugin dropped.
+var errSessionDropped = errors.New("session dropped by plugin")
 
-		cr.Reset(nil)
-		countingReaderPool.Put(cr)
-		connStatsPool.Put(cs)
+// trackStream counts the bytes of a stream when an on_disconnect or on_usage
+// subscriber needs them, and registers streams carrying a session key so a
+// plugin can drop them. The returned finish must run when the handler returns,
+// panics included; it aborts the client stream when the session was dropped.
+func (h *swappableHandler) trackStream(w http.ResponseWriter, r *http.Request, routeID, target, session string, start time.Time) (http.ResponseWriter, *http.Request, func()) {
+	hasDisconnect := h.plugins.HasHook(routeID, plugin.HookOnDisconnect)
+	metered := session != "" && h.plugins.HasHook(routeID, plugin.HookOnUsage)
+	if !hasDisconnect && session == "" {
+		return w, r, nil
 	}
+	if start.IsZero() {
+		start = time.Now()
+	}
+
+	var counter *conntrack.Counter
+	if hasDisconnect || metered {
+		counter = &conntrack.Counter{}
+		r.Body = counter.RxBody(r.Body)
+		w = &countingResponseWriter{ResponseWriter: w, counter: counter}
+	}
+
+	var tracked *conntrack.Conn
+	ctx := r.Context()
+	if session != "" {
+		var cancel context.CancelCauseFunc
+		ctx, cancel = context.WithCancelCause(ctx)
+		r = r.WithContext(ctx)
+		tracked = h.plugins.Sessions().Open(routeID, session, counter, func() { cancel(errSessionDropped) })
+	}
+
+	remoteAddr := r.RemoteAddr
+	finish := func() {
+		if tracked != nil {
+			h.plugins.Sessions().Close(tracked)
+		}
+		if hasDisconnect {
+			h.plugins.OnDisconnect(routeID, &plugin.DisconnectInfo{
+				RouteID:    routeID,
+				Target:     target,
+				RemoteAddr: remoteAddr,
+				BytesRx:    counter.Rx(),
+				BytesTx:    counter.Tx(),
+				DurationMs: time.Since(start).Milliseconds(),
+				Session:    session,
+			})
+		}
+		if context.Cause(ctx) == errSessionDropped {
+			panic(http.ErrAbortHandler)
+		}
+	}
+	return w, r, finish
 }
 
 // maxPluginBody is the maximum request body size forwarded to plugins.
@@ -1553,8 +1559,10 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 			for _, pluginRef := range merged {
 				pluginPath := pluginRef
 				pluginName := pluginRef
+				var usageInterval time.Duration
 				if p, ok := cfg.Plugins[pluginRef]; ok {
 					pluginPath = p.Path
+					usageInterval = p.UsageInterval.Duration
 				} else {
 					pluginName = strings.TrimSuffix(filepath.Base(pluginRef), ".go")
 				}
@@ -1572,12 +1580,13 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 				bound[absPath] = true
 
 				bindings = append(bindings, &plugin.Binding{
-					Name:     pluginName,
-					RouteID:  routeID,
-					Plugin:   absPath,
-					Match:    match,
-					Balancer: b,
-					Timeout:  route.PluginTimeout.Duration,
+					Name:          pluginName,
+					RouteID:       routeID,
+					Plugin:        absPath,
+					Match:         match,
+					Balancer:      b,
+					Timeout:       route.PluginTimeout.Duration,
+					UsageInterval: usageInterval,
 				})
 			}
 		}
@@ -1882,6 +1891,41 @@ func (w *throttledResponseWriter) Flush() {
 
 func (w *throttledResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return http.NewResponseController(w.ResponseWriter).Hijack()
+}
+
+// countingResponseWriter counts response body bytes as they are written, and
+// every byte of a hijacked connection, so usage reports see long-lived
+// streams before they end.
+type countingResponseWriter struct {
+	http.ResponseWriter
+	counter *conntrack.Counter
+}
+
+func (w *countingResponseWriter) Write(b []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(b)
+	w.counter.AddTx(int64(n))
+	return n, err
+}
+
+func (w *countingResponseWriter) Flush() {
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *countingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, brw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	// Bytes the server buffered past the request headers came from the client too.
+	buffered, _ := brw.Reader.Peek(brw.Reader.Buffered())
+	w.counter.AddRx(int64(len(buffered)))
+	counted := w.counter.Conn(conn)
+	reader := bufio.NewReader(io.MultiReader(bytes.NewReader(buffered), counted))
+	return counted, bufio.NewReadWriter(reader, bufio.NewWriter(counted)), nil
+}
+
+func (w *countingResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 // minPositive returns the smaller of two positive values.
