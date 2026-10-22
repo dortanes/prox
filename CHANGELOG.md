@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/dortanes/prox/compare/v1.1.0...v1.2.0) (2026-10-22)
+
+
+### Features
+
+* **balancer:** ✨ eject and retry failed targets ([a475536](https://github.com/dortanes/prox/commit/a4755361127fff654b02ac2aadc4ad819cfe45bb))
+
 ## [1.1.0](https://github.com/dortanes/prox/compare/v1.0.0...v1.1.0) (2026-10-22)
 
 
