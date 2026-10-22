@@ -12,48 +12,83 @@ type Balancer interface {
 	// Next returns the next target address.
 	// For connection-tracking strategies (e.g. LeastConn), this also
 	// marks the target as having one more active connection.
-	// Returns "" if the pool is empty.
+	// Returns "" if the pool is empty or every target is ejected.
 	Next() string
+
+	// NextExcept is Next that also skips the excluded targets, for picking a
+	// replacement after a failed dial.
+	NextExcept(exclude []string) string
 
 	// Done signals that a request/connection to the given target has finished.
 	// This is a no-op for strategies that don't track active connections.
 	Done(target string)
 
+	// Eject takes target out of rotation for the balancer's cool-down after
+	// a dial to it failed. A no-op when ejection is disabled.
+	Eject(target string, cause error)
+
 	// SwapTargets atomically replaces the target pool.
-	// Active connections tracked by Done() are reset.
+	// Active connections tracked by Done() are reset, and targets that left
+	// the pool lose their ejection.
 	SwapTargets(targets []string)
 
 	// Targets returns a copy of the current target pool.
 	Targets() []string
 }
 
+// strategy is a flat balancer that Grouped can drive as a sub-pool: it shares
+// the route's ejection state, so swapping one sub-pool keeps the others' ejections.
+type strategy interface {
+	Balancer
+	swap(targets []string)
+	ejections() *Ejections
+}
+
 // RoundRobin distributes requests evenly across targets in order.
 type RoundRobin struct {
 	pool    atomic.Pointer[rrPool]
 	counter atomic.Uint64
+	ej      *Ejections
 }
 
 type rrPool struct {
 	targets []string
 }
 
-// NewRoundRobin creates a round-robin balancer.
+// NewRoundRobin creates a round-robin balancer without ejection.
 func NewRoundRobin(targets []string) *RoundRobin {
-	rr := &RoundRobin{}
+	return newRoundRobin(targets, nil)
+}
+
+func newRoundRobin(targets []string, ej *Ejections) *RoundRobin {
+	rr := &RoundRobin{ej: ej}
 	rr.pool.Store(&rrPool{targets: targets})
 	return rr
 }
 
-func (rr *RoundRobin) Next() string {
+func (rr *RoundRobin) Next() string { return rr.NextExcept(nil) }
+
+func (rr *RoundRobin) NextExcept(exclude []string) string {
 	p := rr.pool.Load()
-	if len(p.targets) == 0 {
+	n := uint64(len(p.targets))
+	if n == 0 {
 		return ""
 	}
-	n := rr.counter.Add(1)
-	return p.targets[(n-1)%uint64(len(p.targets))]
+	start := rr.counter.Add(1) - 1
+	if !rr.ej.filtering(exclude) {
+		return p.targets[start%n]
+	}
+	for i := uint64(0); i < n; i++ {
+		if t := p.targets[(start+i)%n]; rr.ej.available(t, exclude) {
+			return t
+		}
+	}
+	return ""
 }
 
 func (rr *RoundRobin) Done(string) {}
+
+func (rr *RoundRobin) Eject(target string, cause error) { rr.ej.eject(target, cause) }
 
 // Take reports whether the target is in the pool. Round-robin keeps no
 // per-target state, so nothing is reserved.
@@ -62,8 +97,15 @@ func (rr *RoundRobin) Take(target string) bool {
 }
 
 func (rr *RoundRobin) SwapTargets(targets []string) {
+	rr.swap(targets)
+	rr.ej.retain(targets)
+}
+
+func (rr *RoundRobin) swap(targets []string) {
 	rr.pool.Store(&rrPool{targets: targets})
 }
+
+func (rr *RoundRobin) ejections() *Ejections { return rr.ej }
 
 func (rr *RoundRobin) Targets() []string {
 	p := rr.pool.Load()
@@ -73,28 +115,52 @@ func (rr *RoundRobin) Targets() []string {
 // Random selects a target at random.
 type Random struct {
 	pool atomic.Pointer[randPool]
+	ej   *Ejections
 }
 
 type randPool struct {
 	targets []string
 }
 
-// NewRandom creates a random balancer.
+// NewRandom creates a random balancer without ejection.
 func NewRandom(targets []string) *Random {
-	r := &Random{}
+	return newRandom(targets, nil)
+}
+
+func newRandom(targets []string, ej *Ejections) *Random {
+	r := &Random{ej: ej}
 	r.pool.Store(&randPool{targets: targets})
 	return r
 }
 
-func (r *Random) Next() string {
-	p := r.pool.Load()
-	if len(p.targets) == 0 {
+func (r *Random) Next() string { return r.NextExcept(nil) }
+
+func (r *Random) NextExcept(exclude []string) string {
+	return pickRandom(r.pool.Load().targets, r.ej, exclude)
+}
+
+// pickRandom picks a random available target: a random start, then the first
+// available one after it, so ejected targets never starve the others.
+func pickRandom(targets []string, ej *Ejections, exclude []string) string {
+	n := len(targets)
+	if n == 0 {
 		return ""
 	}
-	return p.targets[rand.Intn(len(p.targets))]
+	start := rand.Intn(n)
+	if !ej.filtering(exclude) {
+		return targets[start]
+	}
+	for i := 0; i < n; i++ {
+		if t := targets[(start+i)%n]; ej.available(t, exclude) {
+			return t
+		}
+	}
+	return ""
 }
 
 func (r *Random) Done(string) {}
+
+func (r *Random) Eject(target string, cause error) { r.ej.eject(target, cause) }
 
 // Take reports whether the target is in the pool. Random keeps no per-target
 // state, so nothing is reserved.
@@ -103,8 +169,15 @@ func (r *Random) Take(target string) bool {
 }
 
 func (r *Random) SwapTargets(targets []string) {
+	r.swap(targets)
+	r.ej.retain(targets)
+}
+
+func (r *Random) swap(targets []string) {
 	r.pool.Store(&randPool{targets: targets})
 }
+
+func (r *Random) ejections() *Ejections { return r.ej }
 
 func (r *Random) Targets() []string {
 	p := r.pool.Load()
@@ -116,6 +189,7 @@ func (r *Random) Targets() []string {
 type LeastConn struct {
 	pool atomic.Pointer[lcPool]
 	mu   sync.Mutex // protects the find-min-and-increment in Next()
+	ej   *Ejections
 }
 
 type lcPool struct {
@@ -124,9 +198,13 @@ type lcPool struct {
 	index   map[string]int // target → slice index for O(1) lookup
 }
 
-// NewLeastConn creates a least-connections balancer.
+// NewLeastConn creates a least-connections balancer without ejection.
 func NewLeastConn(targets []string) *LeastConn {
-	lc := &LeastConn{}
+	return newLeastConn(targets, nil)
+}
+
+func newLeastConn(targets []string, ej *Ejections) *LeastConn {
+	lc := &LeastConn{ej: ej}
 	lc.pool.Store(newLCPool(targets))
 	return lc
 }
@@ -143,25 +221,29 @@ func newLCPool(targets []string) *lcPool {
 	}
 }
 
-// Next returns the target with the fewest active connections and
-// atomically increments its counter.
-func (lc *LeastConn) Next() string {
+func (lc *LeastConn) Next() string { return lc.NextExcept(nil) }
+
+// NextExcept returns the available target with the fewest active connections
+// and atomically increments its counter.
+func (lc *LeastConn) NextExcept(exclude []string) string {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 
 	p := lc.pool.Load()
-	if len(p.targets) == 0 {
-		return ""
-	}
-
-	minIdx := 0
-	minVal := p.conns[0].Load()
-	for i := 1; i < len(p.targets); i++ {
-		v := p.conns[i].Load()
-		if v < minVal {
+	filter := lc.ej.filtering(exclude)
+	minIdx := -1
+	var minVal int64
+	for i, t := range p.targets {
+		if filter && !lc.ej.available(t, exclude) {
+			continue
+		}
+		if v := p.conns[i].Load(); minIdx < 0 || v < minVal {
 			minVal = v
 			minIdx = i
 		}
+	}
+	if minIdx < 0 {
+		return ""
 	}
 
 	p.conns[minIdx].Add(1)
@@ -175,6 +257,8 @@ func (lc *LeastConn) Done(target string) {
 		p.conns[i].Add(-1)
 	}
 }
+
+func (lc *LeastConn) Eject(target string, cause error) { lc.ej.eject(target, cause) }
 
 // Take reserves the named target, incrementing its connection counter exactly
 // as Next() would. Reports false when the target is not in the pool, in which
@@ -192,11 +276,18 @@ func (lc *LeastConn) Take(target string) bool {
 // SwapTargets atomically replaces the target pool.
 // Active connection counts are reset to zero.
 func (lc *LeastConn) SwapTargets(targets []string) {
+	lc.swap(targets)
+	lc.ej.retain(targets)
+}
+
+func (lc *LeastConn) swap(targets []string) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 
 	lc.pool.Store(newLCPool(targets))
 }
+
+func (lc *LeastConn) ejections() *Ejections { return lc.ej }
 
 func (lc *LeastConn) Targets() []string {
 	p := lc.pool.Load()
@@ -219,6 +310,8 @@ func (lc *LeastConn) Conns(target string) int64 {
 type KeyedBalancer interface {
 	Balancer
 	NextKeyed(key string) string
+	// NextKeyedExcept is NextKeyed that also skips the excluded targets.
+	NextKeyedExcept(key string, exclude []string) string
 	SwapGroupedTargets(groups map[string][]string)
 }
 
@@ -234,29 +327,30 @@ type TargetTaker interface {
 // Grouped wraps a balancing strategy and provides per-key target pools.
 // In flat mode (via SwapTargets), all requests use the inner balancer.
 // In grouped mode (via SwapGroupedTargets), each key has its own sub-balancer.
+// All pools share the inner balancer's ejection state.
 //
 // When fallback is enabled, NextKeyed picks a random target from all groups
 // if the requested key has no matching group (or the group is empty).
 type Grouped struct {
 	strategy string
 	fallback bool     // pick random from all groups when key not found
-	inner    Balancer // flat-mode fallback
+	inner    strategy // flat-mode fallback
 	groups   atomic.Pointer[groupedMap]
 	mu       sync.Mutex // protects SwapGroupedTargets
 }
 
 type groupedMap struct {
-	m           map[string]Balancer
+	m           map[string]strategy
 	targetGroup map[string]string // target → group key for O(1) Done() routing
 	allTargets  []string          // flat list of all targets for fallback selection
 }
 
-// NewGrouped creates a grouped balancer wrapping an inner flat balancer.
-// The strategy name is used to create per-key sub-balancers.
-func NewGrouped(strategy string, inner Balancer) *Grouped {
+// NewGrouped creates a grouped balancer wrapping an inner flat balancer built
+// by this package. The strategy name is used to create per-key sub-balancers.
+func NewGrouped(kind string, inner Balancer) *Grouped {
 	return &Grouped{
-		strategy: strategy,
-		inner:    inner,
+		strategy: kind,
+		inner:    inner.(strategy),
 	}
 }
 
@@ -269,13 +363,15 @@ func (g *Grouped) SetFallback(enabled bool) {
 
 // Next delegates to the inner flat balancer. When the inner pool is empty
 // and fallback is enabled, picks a random target from all grouped targets.
-func (g *Grouped) Next() string {
-	if target := g.inner.Next(); target != "" {
+func (g *Grouped) Next() string { return g.NextExcept(nil) }
+
+func (g *Grouped) NextExcept(exclude []string) string {
+	if target := g.inner.NextExcept(exclude); target != "" {
 		return target
 	}
 	if g.fallback {
-		if gm := g.groups.Load(); gm != nil && len(gm.allTargets) > 0 {
-			return gm.allTargets[rand.Intn(len(gm.allTargets))]
+		if gm := g.groups.Load(); gm != nil {
+			return g.pickFallback(gm, exclude)
 		}
 	}
 	return ""
@@ -284,22 +380,34 @@ func (g *Grouped) Next() string {
 // NextKeyed selects a target from the sub-pool matching the key.
 // Falls back to the inner balancer if no groups are configured or key is empty.
 // When fallback is enabled, picks a random target from all groups if the
-// key has no matching group or the matched group's pool is empty.
-func (g *Grouped) NextKeyed(key string) string {
+// key has no matching group or every target of the matched group is unavailable.
+func (g *Grouped) NextKeyed(key string) string { return g.NextKeyedExcept(key, nil) }
+
+func (g *Grouped) NextKeyedExcept(key string, exclude []string) string {
 	if gm := g.groups.Load(); gm != nil && key != "" {
 		if bal, ok := gm.m[key]; ok {
-			if target := bal.Next(); target != "" {
+			if target := bal.NextExcept(exclude); target != "" {
 				return target
 			}
-			// Group exists but pool is empty — fall through to fallback.
 		}
-		// Key not found or group empty — try fallback.
-		if g.fallback && len(gm.allTargets) > 0 {
-			return gm.allTargets[rand.Intn(len(gm.allTargets))]
+		if g.fallback {
+			return g.pickFallback(gm, exclude)
 		}
 		return ""
 	}
-	return g.inner.Next()
+	return g.inner.NextExcept(exclude)
+}
+
+// pickFallback picks a random available target across all groups and
+// reserves it in the sub-pool that owns it, so Done() stays balanced.
+func (g *Grouped) pickFallback(gm *groupedMap, exclude []string) string {
+	target := pickRandom(gm.allTargets, g.inner.ejections(), exclude)
+	if target != "" {
+		if tt, ok := gm.m[gm.targetGroup[target]].(TargetTaker); ok {
+			tt.Take(target)
+		}
+	}
+	return target
 }
 
 // Done decrements the active connection counter for the target.
@@ -313,6 +421,8 @@ func (g *Grouped) Done(target string) {
 	}
 	g.inner.Done(target)
 }
+
+func (g *Grouped) Eject(target string, cause error) { g.inner.Eject(target, cause) }
 
 // Take reserves the named target in the sub-pool that owns it, so a pinned
 // target is tracked by the same sub-balancer that would have selected it.
@@ -345,25 +455,25 @@ func (g *Grouped) Targets() []string {
 }
 
 // SwapGroupedTargets atomically replaces the per-key target pools.
-// Existing sub-balancers for unchanged keys are reused (preserving
-// connection tracking state for leastconn).
+// Existing sub-balancers for unchanged keys are reused. Targets that left
+// every group lose their ejection.
 func (g *Grouped) SwapGroupedTargets(groups map[string][]string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	ej := g.inner.ejections()
 	old := g.groups.Load()
-	newMap := make(map[string]Balancer, len(groups))
+	newMap := make(map[string]strategy, len(groups))
 
 	for key, targets := range groups {
-		// Reuse existing sub-balancer to preserve leastconn state.
 		if old != nil {
 			if existing, ok := old.m[key]; ok {
-				existing.SwapTargets(targets)
+				existing.swap(targets)
 				newMap[key] = existing
 				continue
 			}
 		}
-		newMap[key] = newByStrategy(g.strategy, targets)
+		newMap[key] = newStrategy(g.strategy, targets, ej)
 	}
 
 	tg := make(map[string]string, len(groups)*2)
@@ -375,24 +485,25 @@ func (g *Grouped) SwapGroupedTargets(groups map[string][]string) {
 		all = append(all, targets...)
 	}
 
+	ej.retain(all)
 	g.groups.Store(&groupedMap{m: newMap, targetGroup: tg, allTargets: all})
 }
 
-// NewByType creates a flat balancer of the given type.
+// NewByType creates a flat balancer of the given type that ejects failing
+// targets with ej (nil disables ejection).
 // Valid types: "random", "leastconn", "roundrobin" (default).
-func NewByType(strategy string, targets []string) Balancer {
-	return newByStrategy(strategy, targets)
+func NewByType(strategy string, targets []string, ej *Ejections) Balancer {
+	return newStrategy(strategy, targets, ej)
 }
 
-// newByStrategy creates a flat balancer of the given type.
-func newByStrategy(strategy string, targets []string) Balancer {
+func newStrategy(strategy string, targets []string, ej *Ejections) strategy {
 	switch strategy {
 	case "random":
-		return NewRandom(targets)
+		return newRandom(targets, ej)
 	case "leastconn":
-		return NewLeastConn(targets)
+		return newLeastConn(targets, ej)
 	default:
-		return NewRoundRobin(targets)
+		return newRoundRobin(targets, ej)
 	}
 }
 

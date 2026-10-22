@@ -137,6 +137,48 @@ func TestLoad_PluginsRegistryValidation(t *testing.T) {
 	}
 }
 
+func TestLoad_BalancerEject(t *testing.T) {
+	raw := func(eject string) string {
+		return `{
+			"services": {
+				"web": {
+					"listen": ":80",
+					"routes": [{
+						"match": { "path": "/" },
+						"balancer": { "type": "roundrobin", "targets": ["a:1"]` + eject + ` },
+						"action": "a"
+					}]
+				}
+			},
+			"actions": {
+				"a": { "type": "proxy", "upstream": "http://{target}" }
+			}
+		}`
+	}
+
+	for _, tc := range []struct {
+		eject string
+		want  time.Duration
+	}{
+		{"", 10 * time.Second},
+		{`, "eject": "30s"`, 30 * time.Second},
+		{`, "eject": "0s"`, 0},
+	} {
+		cfg, err := Load([]byte(raw(tc.eject)))
+		if err != nil {
+			t.Fatalf("load %q: %v", tc.eject, err)
+		}
+		if got := cfg.Services["web"].Routes[0].Balancer.EjectCooldown(); got != tc.want {
+			t.Errorf("eject %q: cool-down = %v, want %v", tc.eject, got, tc.want)
+		}
+	}
+
+	_, err := Load([]byte(raw(`, "eject": "-1s"`)))
+	if err == nil || !strings.Contains(err.Error(), "balancer.eject must not be negative") {
+		t.Errorf("expected negative eject error, got: %v", err)
+	}
+}
+
 func TestLoad_PluginUsageInterval(t *testing.T) {
 	raw := func(interval string) string {
 		return `{

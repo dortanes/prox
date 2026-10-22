@@ -35,6 +35,9 @@ type MatchResult struct {
 	Target        string            // selected target from balancer (empty if no balancer)
 	Vars          map[string]string // route-level variables from "set"
 	bal           balancer.Balancer // balancer that selected Target (nil if none)
+	key           string            // group key Target was picked from ("" for a flat pick)
+	pinned        bool              // a plugin pinned Target; a retry does not replace it
+	tried         []string          // targets whose dial failed for this request
 
 	// Speed limiting — populated from route config.
 	// Shared buckets are route-wide; BPS rates are for per-connection bucket creation.
@@ -75,8 +78,34 @@ func (m *MatchResult) SelectGroup(group string) (string, bool) {
 	if m.Target != "" {
 		m.bal.Done(m.Target)
 	}
+	m.key = group
 	m.Target = kb.NextKeyed(group)
 	return m.Target, true
+}
+
+// Retry handles a failed dial to Target, before any byte of the request was
+// sent: the balancer ejects the target, and Target moves to another target
+// of the same group that this request has not tried yet. It returns the new
+// target, or "" when the group has none left, a plugin pinned the failed
+// target, or the route has no balancer.
+func (m *MatchResult) Retry(cause error) string {
+	if m == nil || m.bal == nil || m.Target == "" {
+		return ""
+	}
+	failed := m.Target
+	m.bal.Done(failed)
+	m.bal.Eject(failed, cause)
+	m.Target = ""
+	if m.pinned {
+		return ""
+	}
+	m.tried = append(m.tried, failed)
+	if kb, ok := m.bal.(balancer.KeyedBalancer); ok && m.key != "" {
+		m.Target = kb.NextKeyedExcept(m.key, m.tried)
+	} else {
+		m.Target = m.bal.NextExcept(m.tried)
+	}
+	return m.Target
 }
 
 // SelectTarget pins Target to one named upstream, overriding both the balanced
@@ -103,6 +132,7 @@ func (m *MatchResult) SelectTarget(target string) bool {
 		}
 		if tt, ok := m.bal.(balancer.TargetTaker); ok && tt.Take(target) {
 			m.Target = target
+			m.pinned = true
 			return true
 		}
 	}
@@ -286,14 +316,7 @@ func buildBalancer(cfg *config.BalancerConfig) balancer.Balancer {
 	if cfg == nil {
 		return nil
 	}
-	switch cfg.Type {
-	case config.BalancerRandom:
-		return balancer.NewRandom(cfg.Targets)
-	case config.BalancerLeastConn:
-		return balancer.NewLeastConn(cfg.Targets)
-	default:
-		return balancer.NewRoundRobin(cfg.Targets)
-	}
+	return balancer.NewByType(string(cfg.Type), cfg.Targets, balancer.NewEjections(cfg.EjectCooldown()))
 }
 
 // MatchAction returns only the action name for the matching route, without
@@ -397,7 +420,8 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 		// Select a target from the balancer if present.
 		if route.bal != nil {
 			if kb, ok := route.bal.(balancer.KeyedBalancer); ok && len(captures) > 0 {
-				result.Target = kb.NextKeyed(captures[0])
+				result.key = captures[0]
+				result.Target = kb.NextKeyed(result.key)
 			} else {
 				result.Target = route.bal.Next()
 			}

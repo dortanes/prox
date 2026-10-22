@@ -98,7 +98,7 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 			FlushInterval: flushInterval,
 			BufferPool:    proxyBufPool{},
 		}
-		proxy.Transport = transport
+		proxy.Transport = &retryTransport{RoundTripper: transport, proxy: p}
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 			if errors.Is(err, context.Canceled) {
 				slog.Debug("client disconnected",
@@ -188,19 +188,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Forward proxy: relay to target from the absolute URL via upstream.
 	if r.URL.Scheme != "" && r.URL.Host != "" {
-		serveForwardProxy(w, r, p.target, p.headers, p.timeout)
+		p.serveForwardProxy(w, r, p.target)
 		return
 	}
 	if isWebSocketUpgrade(r) {
-		serveWebSocket(w, r, p.target, p.headers, p.timeout)
+		p.serveWebSocket(w, r, p.target)
 		return
 	}
 	if r.Method == http.MethodConnect {
-		serveConnect(w, r, p.target, p.timeout)
+		p.serveConnect(w, r, p.target)
 		return
 	}
 	if p.stream {
-		serveTunnel(w, r, p.target, p.headers, p.timeout)
+		p.serveTunnel(w, r, p.target)
 		return
 	}
 	// The fast path strips Upgrade; ReverseProxy performs generic protocol switches.
@@ -263,19 +263,19 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 
 	// Forward proxy: relay to target from the absolute URL via upstream.
 	if r.URL.Scheme != "" && r.URL.Host != "" {
-		serveForwardProxy(w, r, target, p.headers, p.timeout)
+		p.serveForwardProxy(w, r, target)
 		return
 	}
 	if isWebSocketUpgrade(r) {
-		serveWebSocket(w, r, target, p.headers, p.timeout)
+		p.serveWebSocket(w, r, target)
 		return
 	}
 	if r.Method == http.MethodConnect {
-		serveConnect(w, r, target, p.timeout)
+		p.serveConnect(w, r, target)
 		return
 	}
 	if p.stream {
-		serveTunnel(w, r, target, p.headers, p.timeout)
+		p.serveTunnel(w, r, target)
 		return
 	}
 
@@ -289,18 +289,9 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 // preserved so the upstream proxy knows the actual target.
 //
 // Flow: browser → prox (this handler) → upstream proxy → target site.
-func serveForwardProxy(w http.ResponseWriter, r *http.Request, target *url.URL, headers map[string]string, timeout time.Duration) {
+func (p *Proxy) serveForwardProxy(w http.ResponseWriter, r *http.Request, target *url.URL) {
+	upstream, target, err := p.dial(r, target)
 	host := target.Host
-	if !strings.Contains(host, ":") {
-		switch target.Scheme {
-		case "https", "wss":
-			host += ":443"
-		default:
-			host += ":80"
-		}
-	}
-
-	upstream, err := dialUpstream(target.Scheme, host, target.Hostname(), timeout)
 	if err != nil {
 		slog.Warn("forward proxy dial failed",
 			"upstream", host,
@@ -319,7 +310,7 @@ func serveForwardProxy(w http.ResponseWriter, r *http.Request, target *url.URL, 
 	outReq.RequestURI = r.URL.String()
 
 	// Apply configured headers.
-	for k, v := range headers {
+	for k, v := range p.headers {
 		if http.CanonicalHeaderKey(k) == "Host" {
 			outReq.Host = v
 		} else {
@@ -499,15 +490,23 @@ func durationOr(svcCfg *config.ServerConfig, getter func(*config.ServerConfig) t
 	return fallback
 }
 
-// dialUpstream connects to an upstream address, using TLS for https/wss schemes.
-func dialUpstream(scheme, addr, serverName string, timeout time.Duration) (net.Conn, error) {
-	switch scheme {
-	case "https", "wss":
+// dialUpstream connects to the upstream, using TLS for https/wss schemes and
+// the scheme's default port when the URL has none.
+func dialUpstream(target *url.URL, timeout time.Duration) (net.Conn, error) {
+	addr := target.Host
+	secure := target.Scheme == "https" || target.Scheme == "wss"
+	if target.Port() == "" {
+		if secure {
+			addr = net.JoinHostPort(target.Hostname(), "443")
+		} else {
+			addr = net.JoinHostPort(target.Hostname(), "80")
+		}
+	}
+	if secure {
 		dialer := &net.Dialer{Timeout: timeout}
 		return tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
-			ServerName: serverName,
+			ServerName: target.Hostname(),
 		})
-	default:
-		return net.DialTimeout("tcp", addr, timeout)
 	}
+	return net.DialTimeout("tcp", addr, timeout)
 }

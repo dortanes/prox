@@ -376,6 +376,10 @@ func (v *validator) validateBalancer(prefix string, route *Route) {
 			prefix, bal.Type, BalancerRoundRobin, BalancerRandom, BalancerLeastConn)
 	}
 
+	if bal.EjectCooldown() < 0 {
+		v.addIssue("%s: balancer.eject must not be negative", prefix)
+	}
+
 	// Empty targets are valid when plugins will populate them
 	// (either route-bound, service-level, action-level, or global autostart plugins).
 	if len(bal.Targets) == 0 && !v.routeHasPlugins(route) && !v.hasAutostartPlugins() {

@@ -99,33 +99,6 @@ func Build(cfg *config.Config, configDir string) (*Group, error) {
 				}
 			}
 		}
-
-		// For pass routes with {target}, ensure the dispatcher uses the same
-		// balancer. If no targets are configured yet (plugin will push them
-		// later), create an empty balancer so the dispatcher has a reference
-		// to swap targets into.
-		for i, route := range svc.Routes {
-			if route.Balancer == nil {
-				continue
-			}
-			routeID := fmt.Sprintf("%s:%d", name, i)
-			if _, ok := routeBalancers[routeID]; ok {
-				continue
-			}
-			// Route has a balancer config but no targets and no plugin wrapping.
-			// Create an empty balancer so the dispatcher can reference it.
-			act := resolveAction(route, cfg)
-			if act != nil && act.Type == config.ActionTypePass && strings.Contains(act.Upstream, "{target}") {
-				empty := buildDispatcherBalancer(route.Balancer)
-				if empty == nil {
-					// No static targets — create an empty one by type.
-					empty = bal.NewByType(string(route.Balancer.Type), nil)
-				}
-				if empty != nil {
-					routeBalancers[routeID] = empty
-				}
-			}
-		}
 	}
 
 	// Build plugin manager before servers so handlers can reference it.
@@ -583,12 +556,7 @@ func buildDispatcherRoutes(serviceName string, svc *config.Service, cfg *config.
 					dr.UpstreamTpl = act.Upstream
 					// Use the shared balancer from routeBalancers so plugin
 					// set_targets updates are visible to the L4 dispatcher.
-					if b, ok := routeBalancers[routeID]; ok {
-						dr.Bal = b
-					} else {
-						// Fallback: build from static targets in config.
-						dr.Bal = buildDispatcherBalancer(route.Balancer)
-					}
+					dr.Bal = routeBalancers[routeID]
 				} else {
 					dr.Upstream = act.Upstream
 				}
@@ -621,21 +589,6 @@ func resolveActionType(route *config.Route, cfg *config.Config) config.ActionTyp
 		return act.Type
 	}
 	return ""
-}
-
-// buildDispatcherBalancer creates a balancer for L4 dispatcher routes.
-func buildDispatcherBalancer(cfg *config.BalancerConfig) bal.Balancer {
-	if cfg == nil || len(cfg.Targets) == 0 {
-		return nil
-	}
-	switch cfg.Type {
-	case config.BalancerRandom:
-		return bal.NewRandom(cfg.Targets)
-	case config.BalancerLeastConn:
-		return bal.NewLeastConn(cfg.Targets)
-	default:
-		return bal.NewRoundRobin(cfg.Targets)
-	}
 }
 
 // loadCertificates loads TLS certificate+key pairs.

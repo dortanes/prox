@@ -243,6 +243,20 @@ type BalancerConfig struct {
 	Type     BalancerType `json:"type"`
 	Targets  []string     `json:"targets"`
 	Fallback bool         `json:"fallback,omitempty"` // When true and using grouped targets, pick a random target from all groups if the key has no match.
+	Eject    *Duration    `json:"eject,omitempty"`    // How long a target whose dial failed is skipped (default: 10s, "0s" disables).
+}
+
+// defaultEjectCooldown keeps a refusing target out long enough for a restart
+// to finish without starving the pool when it comes back.
+const defaultEjectCooldown = 10 * time.Second
+
+// EjectCooldown returns how long a target whose dial failed is skipped;
+// zero disables ejection.
+func (b *BalancerConfig) EjectCooldown() time.Duration {
+	if b.Eject == nil {
+		return defaultEjectCooldown
+	}
+	return b.Eject.Duration
 }
 
 // ActionType represents the kind of action to execute.

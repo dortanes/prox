@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/dortanes/prox/internal/throttle"
 )
@@ -46,22 +45,11 @@ func headerContains(h http.Header, key, value string) bool {
 // serveWebSocket hijacks the client connection and establishes a bidirectional
 // tunnel to the upstream WebSocket server. The full HTTP upgrade handshake
 // is forwarded transparently — no WebSocket framing is interpreted.
-func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, headers map[string]string, timeout time.Duration) {
-	// Determine upstream dial address.
-	host := target.Host
-	if !strings.Contains(host, ":") {
-		switch target.Scheme {
-		case "https", "wss":
-			host += ":443"
-		default:
-			host += ":80"
-		}
-	}
-
-	upstream, err := dialUpstream(target.Scheme, host, target.Hostname(), timeout)
+func (p *Proxy) serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL) {
+	upstream, target, err := p.dial(r, target)
 	if err != nil {
 		slog.Warn("websocket dial failed",
-			"upstream", host,
+			"upstream", target.Host,
 			"err", err,
 		)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
@@ -78,7 +66,7 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 	outReq.RequestURI = outReq.URL.RequestURI()
 
 	// Apply configured headers.
-	for k, v := range headers {
+	for k, v := range p.headers {
 		if http.CanonicalHeaderKey(k) == "Host" {
 			outReq.Host = v
 		} else {

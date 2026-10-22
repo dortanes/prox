@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -27,18 +26,9 @@ import (
 //
 // The request body is streamed in a background goroutine so the response
 // can begin flowing before the upload completes.
-func serveTunnel(w http.ResponseWriter, r *http.Request, target *url.URL, headers map[string]string, timeout time.Duration) {
+func (p *Proxy) serveTunnel(w http.ResponseWriter, r *http.Request, target *url.URL) {
+	upstream, target, err := p.dial(r, target)
 	host := target.Host
-	if !strings.Contains(host, ":") {
-		switch target.Scheme {
-		case "https", "wss":
-			host += ":443"
-		default:
-			host += ":80"
-		}
-	}
-
-	upstream, err := dialUpstream(target.Scheme, host, target.Hostname(), timeout)
 	if err != nil {
 		slog.Warn("tunnel dial failed",
 			"upstream", host,
@@ -58,7 +48,7 @@ func serveTunnel(w http.ResponseWriter, r *http.Request, target *url.URL, header
 	outReq.RequestURI = outReq.URL.RequestURI()
 
 	// Apply configured headers.
-	for k, v := range headers {
+	for k, v := range p.headers {
 		if http.CanonicalHeaderKey(k) == "Host" {
 			outReq.Host = v
 		} else {
@@ -162,18 +152,9 @@ func closeOnCancel(ctx context.Context, conns ...io.Closer) func() bool {
 //   - HTTP/1.1: hijack the connection and relay raw TCP bytes.
 //   - HTTP/2: use the ResponseWriter and request body as a framed
 //     bidirectional stream (HTTP/2 does not support Hijack).
-func serveConnect(w http.ResponseWriter, r *http.Request, target *url.URL, timeout time.Duration) {
+func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request, target *url.URL) {
+	upstream, target, err := p.dial(r, target)
 	host := target.Host
-	if !strings.Contains(host, ":") {
-		switch target.Scheme {
-		case "https", "wss":
-			host += ":443"
-		default:
-			host += ":80"
-		}
-	}
-
-	upstream, err := dialUpstream(target.Scheme, host, target.Hostname(), timeout)
 	if err != nil {
 		slog.Warn("connect dial failed",
 			"upstream", host,
@@ -188,7 +169,7 @@ func serveConnect(w http.ResponseWriter, r *http.Request, target *url.URL, timeo
 	if connectTarget == "" {
 		connectTarget = r.URL.Host
 	}
-	if err := chainConnect(upstream, connectTarget, timeout); err != nil {
+	if err := chainConnect(upstream, connectTarget, p.timeout); err != nil {
 		upstream.Close()
 		slog.Warn("upstream CONNECT failed",
 			"upstream", host,
