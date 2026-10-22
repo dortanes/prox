@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.1.0](https://github.com/dortanes/prox/compare/v1.0.0...v1.1.0) (2026-10-22)
+
+
+### Features
+
+* **plugin:** ✨ add session usage and drop hooks ([476d416](https://github.com/dortanes/prox/commit/476d416c8babd1266602f235881327b961601291))
+* **sdk:** ✨ add session, usage and drop APIs ([1d1069e](https://github.com/dortanes/prox/commit/1d1069ebaa3d6bca1f4db8283449ae857ec22409))
+
+
+### Bug Fixes
+
+* **proxy:** 🐛 relay upgrades on static routes ([8e859ce](https://github.com/dortanes/prox/commit/8e859ce83452098c6498368168ddde27624f48d5))
+
+
+### Performance Improvements
+
+* **bench:** ⚡ make results reproducible ([da9fca7](https://github.com/dortanes/prox/commit/da9fca70e240e2c0425504cbf1646aec80f3dbaa))
+
 ## 1.0.0 (2026-09-14)
 
 - **HTTP and TCP on one listener.** prox reads the SNI hostname from the TLS ClientHello before termination. Matching connections can be relayed unchanged to raw TCP upstreams, while other domains terminate TLS and continue through HTTP routing.
