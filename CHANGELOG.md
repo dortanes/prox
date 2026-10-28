@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.1](https://github.com/dortanes/prox/compare/v1.2.0...v1.2.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **plugin:** 🐛 close caller pool without races ([8dfae4c](https://github.com/dortanes/prox/commit/8dfae4c98cf5c446e56299bafe5ab17e7288bc24))
+* **router:** 🐛 route HTTP/2 CONNECT by SNI ([a1d416d](https://github.com/dortanes/prox/commit/a1d416d3e6cd451ac586453f8ad85cc55482868a))
+* **server:** 🐛 honor h2: false on every worker ([960ab8d](https://github.com/dortanes/prox/commit/960ab8d89a365df3093944c788d53448d6d4c625))
+
 ## [1.2.0](https://github.com/dortanes/prox/compare/v1.1.0...v1.2.0) (2026-10-22)
 
 
