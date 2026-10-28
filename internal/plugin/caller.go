@@ -127,9 +127,9 @@ func (c *Caller) Fire(frame []byte) error {
 func (c *Caller) Close() {
 	c.mu.Lock()
 	c.closed = true
+	close(c.pool)
 	c.mu.Unlock()
 
-	close(c.pool)
 	for conn := range c.pool {
 		conn.Close()
 	}
@@ -175,8 +175,10 @@ func (c *Caller) call(ctx context.Context, envBytes []byte) ([]byte, error) {
 func (c *Caller) getConn() (net.Conn, error) {
 	// Try to grab an idle connection.
 	select {
-	case conn := <-c.pool:
-		return conn, nil
+	case conn, ok := <-c.pool:
+		if ok {
+			return conn, nil
+		}
 	default:
 	}
 
@@ -185,13 +187,13 @@ func (c *Caller) getConn() (net.Conn, error) {
 }
 
 func (c *Caller) putConn(conn net.Conn) {
+	// The send stays under mu so it cannot reach a pool that Close has closed.
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.closed {
-		c.mu.Unlock()
 		conn.Close()
 		return
 	}
-	c.mu.Unlock()
 
 	select {
 	case c.pool <- conn:
