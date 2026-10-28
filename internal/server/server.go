@@ -473,6 +473,7 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 		}
 
 		srv.TLSConfig = tlsCfg
+		srv.ConnContext = withTLSConn
 
 		// Disable HTTP/2 when explicitly configured (h2: false).
 		// Go's HTTP/2 framing strips Connection and Upgrade hop-by-hop headers,
@@ -881,6 +882,7 @@ func (ms *managedServer) serveDirect() error {
 			WriteTimeout: ms.server.WriteTimeout,
 			IdleTimeout:  ms.server.IdleTimeout,
 			TLSConfig:    ms.server.TLSConfig,
+			ConnContext:  ms.server.ConnContext,
 			ErrorLog:     ms.server.ErrorLog,
 		}
 		ms.servers[i] = srv
@@ -1040,6 +1042,33 @@ func releaseCapture(c *logger.ResponseCapture) {
 	capturePool.Put(c)
 }
 
+// tlsConnKey keys the *tls.Conn a request arrived on in its context.
+type tlsConnKey struct{}
+
+// withTLSConn is the TLS listeners' ConnContext; HTTP/2 request contexts derive from it.
+func withTLSConn(ctx context.Context, c net.Conn) context.Context {
+	if tc, ok := c.(*tls.Conn); ok {
+		return context.WithValue(ctx, tlsConnKey{}, tc)
+	}
+	return ctx
+}
+
+// withConnTLS fills in r.TLS for an HTTP/2 CONNECT: Go attaches the TLS state
+// only to HTTP/2 requests with :scheme https, and a CONNECT has no :scheme.
+func withConnTLS(r *http.Request) *http.Request {
+	if r.TLS != nil || r.Method != http.MethodConnect {
+		return r
+	}
+	tc, ok := r.Context().Value(tlsConnKey{}).(*tls.Conn)
+	if !ok {
+		return r
+	}
+	state := tc.ConnectionState()
+	r2 := *r
+	r2.TLS = &state
+	return &r2
+}
+
 // swappableHandler wraps an atomic pointer to a routingSnapshot.
 type swappableHandler struct {
 	name         string
@@ -1063,6 +1092,8 @@ func (h *swappableHandler) Swap(rt *router.Router, registry *action.Registry) {
 }
 
 func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	r = withConnTLS(r)
+
 	var start time.Time
 	var capture *logger.ResponseCapture
 	accessOn := logger.AccessEnabled()

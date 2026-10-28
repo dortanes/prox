@@ -35,13 +35,14 @@ func TestMain(m *testing.M) {
 
 // probeEvent is one line of the probe's events file.
 type probeEvent struct {
+	Request    *plugin.RequestInfo    `json:"request,omitempty"`
 	Disconnect *plugin.DisconnectInfo `json:"disconnect,omitempty"`
 	Usage      *plugin.UsageReport    `json:"usage,omitempty"`
 }
 
 // runProbePlugin speaks the plugin protocol: on_request takes the session key
 // from X-Session and drops the sessions listed in X-Drop; on_connect takes it
-// from the first SNI label; on_disconnect and on_usage are recorded.
+// from the first SNI label; on_request, on_disconnect and on_usage are recorded.
 func runProbePlugin(eventsPath string) error {
 	events, err := os.OpenFile(eventsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -122,6 +123,7 @@ func serveProbe(c net.Conn, send func(any), record func(probeEvent)) {
 		case plugin.HookTypeRequest:
 			var req plugin.RequestInfo
 			_ = msgpack.Unmarshal(env.Data, &req)
+			record(probeEvent{Request: &req})
 			if drop := req.Headers["X-Drop"]; drop != "" {
 				send(plugin.Push{Method: plugin.MethodDropSessions, Params: plugin.PushParams{
 					Sessions: strings.Split(drop, ","),
