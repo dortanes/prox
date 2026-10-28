@@ -882,6 +882,7 @@ func (ms *managedServer) serveDirect() error {
 			WriteTimeout: ms.server.WriteTimeout,
 			IdleTimeout:  ms.server.IdleTimeout,
 			TLSConfig:    ms.server.TLSConfig,
+			TLSNextProto: ms.server.TLSNextProto,
 			ConnContext:  ms.server.ConnContext,
 			ErrorLog:     ms.server.ErrorLog,
 		}
