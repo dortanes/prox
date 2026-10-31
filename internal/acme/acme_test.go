@@ -1,13 +1,140 @@
 package acme
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"testing"
+	"time"
 
 	"github.com/caddyserver/certmagic"
 	"github.com/libdns/cloudflare"
 
 	"github.com/dortanes/prox/internal/config"
 )
+
+func TestManageDomains_StopsManagingDroppedDomains(t *testing.T) {
+	m, err := New(&config.ACMEConfig{Email: "admin@example.com", Storage: t.TempDir()}, "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer m.Close()
+
+	ctx := context.Background()
+	domains := []string{"example.com", "example.org"}
+	for _, d := range domains {
+		storeTestCertificate(t, m.magic, d)
+		if _, err := m.magic.CacheManagedCertificate(ctx, d); err != nil {
+			t.Fatalf("caching %s: %v", d, err)
+		}
+	}
+	m.domains = domains
+
+	if err := m.ManageDomains(ctx, []string{"example.com"}); err != nil {
+		t.Fatalf("ManageDomains: %v", err)
+	}
+
+	if len(m.cache.AllMatchingCertificates("example.com")) == 0 {
+		t.Error("kept domain lost its certificate")
+	}
+	if n := len(m.cache.AllMatchingCertificates("example.org")); n != 0 {
+		t.Errorf("dropped domain still has %d managed certificates", n)
+	}
+}
+
+// blockingIssuer holds every issuance open until its context ends.
+type blockingIssuer struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (b *blockingIssuer) IssuerKey() string { return "blocking" }
+
+func (b *blockingIssuer) Issue(ctx context.Context, _ *x509.CertificateRequest) (*certmagic.IssuedCertificate, error) {
+	select {
+	case b.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	select {
+	case b.stopped <- struct{}{}:
+	default:
+	}
+	return nil, ctx.Err()
+}
+
+func TestManageDomains_CancelsObtainForDroppedDomain(t *testing.T) {
+	m, err := New(&config.ACMEConfig{Email: "admin@example.com", Storage: t.TempDir()}, "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer m.Close()
+
+	iss := &blockingIssuer{started: make(chan struct{}, 1), stopped: make(chan struct{}, 1)}
+	m.magic.Issuers = []certmagic.Issuer{iss}
+
+	ctx := context.Background()
+	if err := m.ManageDomains(ctx, []string{"example.org"}); err != nil {
+		t.Fatalf("ManageDomains: %v", err)
+	}
+	select {
+	case <-iss.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("obtain did not start")
+	}
+
+	if err := m.ManageDomains(ctx, nil); err != nil {
+		t.Fatalf("ManageDomains: %v", err)
+	}
+	select {
+	case <-iss.stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("obtain for the dropped domain kept running")
+	}
+}
+
+// storeTestCertificate writes a self-signed certificate where certmagic loads
+// managed certificates from.
+func storeTestCertificate(t *testing.T, magic *certmagic.Config, domain string) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: domain},
+		DNSNames:     []string{domain},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	issuerKey := magic.Issuers[0].IssuerKey()
+	files := map[string][]byte{
+		certmagic.StorageKeys.SiteCert(issuerKey, domain):       pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		certmagic.StorageKeys.SitePrivateKey(issuerKey, domain): pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+		certmagic.StorageKeys.SiteMeta(issuerKey, domain):       []byte("{}"),
+	}
+	for k, v := range files {
+		if err := magic.Storage.Store(context.Background(), k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 // --- resolveStoragePath ---
 

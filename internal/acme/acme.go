@@ -20,6 +20,7 @@ type Manager struct {
 	magic   *certmagic.Config
 	cache   *certmagic.Cache
 	domains []string
+	cancel  context.CancelFunc // stops obtains and renewals started by the last ManageDomains
 	mu      sync.RWMutex
 }
 
@@ -74,14 +75,38 @@ func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 	return m.magic.GetCertificate(hello)
 }
 
-// ManageDomains starts certificate management for the given domains.
+// ManageDomains starts certificate management for the given domains and stops
+// renewing the previously managed ones that are no longer listed.
 // This triggers certificate issuance for any domains that don't already
 // have valid certificates in storage. Certificates are obtained in the
 // background — the call returns immediately without blocking.
+// Obtains still running from the previous call are cancelled; those for
+// domains that stay listed start again.
 func (m *Manager) ManageDomains(ctx context.Context, domains []string) error {
+	keep := make(map[string]bool, len(domains))
+	for _, d := range domains {
+		keep[d] = true
+	}
+	ctx, cancel := context.WithCancel(ctx)
+
 	m.mu.Lock()
+	var dropped []certmagic.SubjectIssuer
+	for _, d := range m.domains {
+		if !keep[d] {
+			dropped = append(dropped, certmagic.SubjectIssuer{Subject: d})
+		}
+	}
+	if m.cancel != nil {
+		m.cancel()
+	}
+	m.cancel = cancel
 	m.domains = domains
 	m.mu.Unlock()
+
+	if len(dropped) > 0 {
+		slog.Info("acme: stopped managing certificates", "count", len(dropped))
+		m.cache.RemoveManaged(dropped)
+	}
 
 	if len(domains) == 0 {
 		return nil
@@ -158,5 +183,10 @@ func (m *Manager) certStatusForDomain(domain string) CertStatus {
 
 // Close cleanly shuts down the ACME manager and its certificate cache.
 func (m *Manager) Close() {
+	m.mu.Lock()
+	if m.cancel != nil {
+		m.cancel()
+	}
+	m.mu.Unlock()
 	m.cache.Stop()
 }
