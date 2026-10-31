@@ -164,12 +164,27 @@ type ACMEDNSConfig struct {
 	// and route auto-discovery are ignored.
 	Discover bool `json:"discover,omitempty"`
 
+	// DiscoverInterval is how often the zone list is fetched again while
+	// discover is on (default: 10m, "0s" disables).
+	DiscoverInterval *Duration `json:"discover_interval,omitempty"`
+
 	// Resolvers overrides the default DNS resolvers used for ACME zone
 	// detection and challenge propagation checks. This is useful in
 	// containerized environments (e.g., Docker) where the default
 	// resolver cannot properly return SOA records for certain TLDs.
 	// Format: ["1.1.1.1:53", "8.8.8.8:53"]
 	Resolvers []string `json:"resolvers,omitempty"`
+}
+
+const defaultDiscoverInterval = 10 * time.Minute
+
+// RediscoverInterval returns how often discovered zones are fetched again;
+// zero disables it.
+func (d *ACMEDNSConfig) RediscoverInterval() time.Duration {
+	if d.DiscoverInterval == nil {
+		return defaultDiscoverInterval
+	}
+	return d.DiscoverInterval.Duration
 }
 
 // ACMES3Config configures S3-compatible object storage for ACME certificate data.

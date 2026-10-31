@@ -97,6 +97,7 @@ With this configuration, prox automatically:
 | `dns.provider` | *(required)* | DNS provider name: `"cloudflare"` |
 | `dns.token` | *(env var)* | API token. Falls back to provider env var if empty |
 | `dns.discover` | `false` | Fetch all zones from provider account and manage certificates automatically |
+| `dns.discover_interval` | `"10m"` | How often to fetch the zone list again while `discover` is on. `"0s"` limits fetching to startup and reload |
 | `dns.resolvers` | `["1.1.1.1:53", "8.8.8.8:53"]` | DNS resolvers for zone detection and propagation checks. Override to use custom nameservers |
 | `storage_type` | `"file"` | Storage backend: `"file"` (local filesystem) or `"s3"` (S3-compatible) |
 | `storage` | `"acme/"` | Storage path for certificates and account data (file backend) |
@@ -210,11 +211,11 @@ With this configuration, prox:
 
 1. Calls the Cloudflare API to list all active zones in the account
 2. Issues certificates for each zone and its wildcard
-3. On reload, re-fetches zones and issues certificates for any new domains
+3. Fetches the zone list again every `discover_interval` (10 minutes by default) and on reload, issues certificates for new zones and stops renewing certificates for zones that are gone
 4. Only requests new certificates when none exist or renewal is due
 
 !!! tip
-    This is ideal for multi-domain setups where domains are added frequently. Add a new domain in Cloudflare, reload prox — the certificate is issued automatically.
+    This is ideal for multi-domain setups where domains are added frequently. Add a domain in Cloudflare and prox issues its certificate within one `discover_interval`. Reload prox to pick it up immediately.
 
 ### Wildcard Certificates
 

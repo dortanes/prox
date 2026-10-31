@@ -453,6 +453,9 @@ func (v *validator) validateACME(name string, svc *Service) {
 					v.addIssue("service %q: acme.dns.provider %q is not supported (available: \"cloudflare\")", name, acme.DNS.Provider)
 				}
 			}
+			if acme.DNS.RediscoverInterval() < 0 {
+				v.addIssue("service %q: acme.dns.discover_interval must not be negative", name)
+			}
 		}
 	}
 

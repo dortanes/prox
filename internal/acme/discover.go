@@ -1,20 +1,34 @@
 package acme
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/dortanes/prox/internal/config"
+)
+
+// Variables so tests can point discovery at a local server.
+var (
+	cloudflareAPI = "https://api.cloudflare.com/client/v4"
+
+	// discoveryTimeout bounds a whole discovery so a stalled provider cannot
+	// block reload or zone rediscovery.
+	discoveryTimeout = 30 * time.Second
 )
 
 // DiscoverDomains fetches all active zones from the DNS provider account
 // and returns domain pairs (zone + wildcard) for certificate management.
 // Uses the same API token configured for DNS-01 challenges.
-func DiscoverDomains(cfg *config.ACMEDNSConfig) ([]string, error) {
+func DiscoverDomains(ctx context.Context, cfg *config.ACMEDNSConfig) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer cancel()
+
 	token := cfg.Token
 	if token == "" {
 		if envVar, ok := providerEnvVars[cfg.Provider]; ok {
@@ -27,7 +41,7 @@ func DiscoverDomains(cfg *config.ACMEDNSConfig) ([]string, error) {
 
 	switch cfg.Provider {
 	case "cloudflare":
-		return discoverCloudflareZones(token)
+		return discoverCloudflareZones(ctx, token)
 	default:
 		return nil, fmt.Errorf("domain discovery not supported for provider %q", cfg.Provider)
 	}
@@ -35,12 +49,12 @@ func DiscoverDomains(cfg *config.ACMEDNSConfig) ([]string, error) {
 
 // discoverCloudflareZones fetches all active zones from the Cloudflare API
 // and returns each zone as a pair: ["example.com", "*.example.com"].
-func discoverCloudflareZones(token string) ([]string, error) {
+func discoverCloudflareZones(ctx context.Context, token string) ([]string, error) {
 	var domains []string
 	page := 1
 
 	for {
-		zones, totalPages, err := fetchCloudflareZonePage(token, page)
+		zones, totalPages, err := fetchCloudflareZonePage(ctx, token, page)
 		if err != nil {
 			return nil, err
 		}
@@ -55,7 +69,7 @@ func discoverCloudflareZones(token string) ([]string, error) {
 		page++
 	}
 
-	slog.Info("acme: discovered domains from DNS provider",
+	slog.Debug("acme: discovered domains from DNS provider",
 		"count", len(domains)/2,
 		"domains", domains,
 	)
@@ -64,10 +78,10 @@ func discoverCloudflareZones(token string) ([]string, error) {
 }
 
 // fetchCloudflareZonePage fetches a single page of active zones.
-func fetchCloudflareZonePage(token string, page int) (zones []string, totalPages int, err error) {
-	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones?status=active&per_page=50&page=%d", page)
+func fetchCloudflareZonePage(ctx context.Context, token string, page int) (zones []string, totalPages int, err error) {
+	url := fmt.Sprintf("%s/zones?status=active&per_page=50&page=%d", cloudflareAPI, page)
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, 0, err
 	}

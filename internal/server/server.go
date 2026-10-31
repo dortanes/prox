@@ -48,17 +48,19 @@ type Group struct {
 	handlers map[string]*swappableHandler // keyed by service name
 	plugins  *plugin.Manager              // nil when no plugins configured
 	cfg      *config.Config               // stored for ACME domain discovery
+	acmeMu   sync.Mutex                   // serializes ACME domain updates from reload and zone rediscovery
 }
 
 type managedServer struct {
-	name     string
-	server   *http.Server
-	servers  []*http.Server         // parallel HTTP servers for SO_REUSEPORT
-	dispatch *dispatcher.Dispatcher // non-nil when service has "pass" routes
-	acme     *proxacme.Manager      // non-nil when ACME is configured
-	rawLn    net.Listener           // raw TCP listener
-	rawLns   []net.Listener         // parallel raw TCP listeners for SO_REUSEPORT
-	maxConns int                    // max concurrent connections (0 = unlimited)
+	name            string
+	server          *http.Server
+	servers         []*http.Server         // parallel HTTP servers for SO_REUSEPORT
+	dispatch        *dispatcher.Dispatcher // non-nil when service has "pass" routes
+	acme            *proxacme.Manager      // non-nil when ACME is configured
+	stopRediscovery context.CancelFunc     // non-nil while zone rediscovery runs; guarded by Group.acmeMu
+	rawLn           net.Listener           // raw TCP listener
+	rawLns          []net.Listener         // parallel raw TCP listeners for SO_REUSEPORT
+	maxConns        int                    // max concurrent connections (0 = unlimited)
 }
 
 // Build creates a server group from the loaded configuration.
@@ -204,36 +206,8 @@ func (g *Group) Reload(cfg *config.Config) error {
 		if ms.acme == nil {
 			continue
 		}
-		svc, ok := cfg.Services[ms.name]
-		if !ok {
-			continue
-		}
-
-		var newDomains []string
-		if len(svc.ACME.Domains) > 0 {
-			newDomains = svc.ACME.Domains
-		} else if svc.ACME.DNS != nil && svc.ACME.DNS.Discover {
-			discovered, err := proxacme.DiscoverDomains(svc.ACME.DNS)
-			if err != nil {
-				slog.Error("acme: domain discovery failed on reload",
-					"service", ms.name,
-					"err", err,
-				)
-				continue
-			}
-			newDomains = discovered
-		} else {
-			newDomains = extractDomains(svc.Routes)
-		}
-
-		current := ms.acme.ManagedDomains()
-		if !slicesEqual(current, newDomains) {
-			if err := ms.acme.ManageDomains(context.Background(), newDomains); err != nil {
-				slog.Error("acme: domain update failed after reload",
-					"service", ms.name,
-					"err", err,
-				)
-			}
+		if svc, ok := cfg.Services[ms.name]; ok && svc.ACME != nil {
+			g.syncACMEDomains(ms, svc)
 		}
 	}
 
@@ -716,11 +690,15 @@ func (g *Group) startACME(ctx context.Context, cfg *config.Config) {
 			continue
 		}
 
+		g.acmeMu.Lock()
+		g.restartRediscovery(ms, svc.ACME)
+		g.acmeMu.Unlock()
+
 		domains := ms.acme.ManagedDomains()
 
 		// If no explicit domains, try DNS provider discovery.
 		if len(domains) == 0 && svc.ACME.DNS != nil && svc.ACME.DNS.Discover {
-			discovered, err := proxacme.DiscoverDomains(svc.ACME.DNS)
+			discovered, err := proxacme.DiscoverDomains(ctx, svc.ACME.DNS)
 			if err != nil {
 				slog.Error("acme: domain discovery failed",
 					"service", ms.name,
@@ -748,6 +726,106 @@ func (g *Group) startACME(ctx context.Context, cfg *config.Config) {
 				"err", err,
 			)
 		}
+	}
+}
+
+// syncACMEDomains re-resolves a service's ACME domains after a reload and
+// restarts its zone rediscovery with the new settings.
+func (g *Group) syncACMEDomains(ms *managedServer, svc *config.Service) {
+	g.acmeMu.Lock()
+	defer g.acmeMu.Unlock()
+
+	g.restartRediscovery(ms, svc.ACME)
+
+	var domains []string
+	if len(svc.ACME.Domains) > 0 {
+		domains = svc.ACME.Domains
+	} else if svc.ACME.DNS != nil && svc.ACME.DNS.Discover {
+		discovered, err := proxacme.DiscoverDomains(context.Background(), svc.ACME.DNS)
+		if err != nil {
+			slog.Error("acme: domain discovery failed on reload",
+				"service", ms.name,
+				"err", err,
+			)
+			return
+		}
+		domains = discovered
+	} else {
+		domains = extractDomains(svc.Routes)
+	}
+
+	applyACMEDomains(ms.name, ms.acme, domains)
+}
+
+// restartRediscovery replaces the service's zone rediscovery loop with one
+// built from acme. The caller holds acmeMu.
+func (g *Group) restartRediscovery(ms *managedServer, acme *config.ACMEConfig) {
+	if ms.stopRediscovery != nil {
+		ms.stopRediscovery()
+		ms.stopRediscovery = nil
+	}
+
+	dns := acme.DNS
+	if len(acme.Domains) > 0 || dns == nil || !dns.Discover || dns.RediscoverInterval() <= 0 {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ms.stopRediscovery = cancel
+	go g.rediscoverZones(ctx, ms.name, ms.acme, dns.RediscoverInterval(), func(ctx context.Context) ([]string, error) {
+		return proxacme.DiscoverDomains(ctx, dns)
+	})
+}
+
+// rediscoverZones fetches the zone list every interval and applies changes
+// until ctx is cancelled.
+func (g *Group) rediscoverZones(ctx context.Context, service string, m domainManager, every time.Duration, discover func(context.Context) ([]string, error)) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+
+		domains, err := discover(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Error("acme: zone rediscovery failed",
+					"service", service,
+					"err", err,
+				)
+			}
+			continue
+		}
+
+		g.acmeMu.Lock()
+		// Cancellation happens under acmeMu, so a cancelled loop holds a result the reload already superseded.
+		if ctx.Err() == nil {
+			applyACMEDomains(service, m, domains)
+		}
+		g.acmeMu.Unlock()
+	}
+}
+
+// domainManager is the part of the ACME manager that domain updates drive.
+type domainManager interface {
+	ManagedDomains() []string
+	ManageDomains(ctx context.Context, domains []string) error
+}
+
+// applyACMEDomains hands domains to m when they differ from what it manages.
+func applyACMEDomains(service string, m domainManager, domains []string) {
+	if slicesEqual(m.ManagedDomains(), domains) {
+		return
+	}
+	if err := m.ManageDomains(context.Background(), domains); err != nil {
+		slog.Error("acme: domain update failed",
+			"service", service,
+			"err", err,
+		)
 	}
 }
 
@@ -1005,6 +1083,11 @@ func (g *Group) shutdown() {
 
 			// Stop ACME certificate manager.
 			if ms.acme != nil {
+				g.acmeMu.Lock()
+				if ms.stopRediscovery != nil {
+					ms.stopRediscovery()
+				}
+				g.acmeMu.Unlock()
 				ms.acme.Close()
 			}
 		}(ms)

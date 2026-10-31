@@ -179,6 +179,50 @@ func TestLoad_BalancerEject(t *testing.T) {
 	}
 }
 
+func TestLoad_ACMEDiscoverInterval(t *testing.T) {
+	raw := func(interval string) string {
+		return `{
+			"services": {
+				"web": {
+					"listen": ":443",
+					"tls": true,
+					"acme": {
+						"email": "admin@example.com",
+						"challenge": "dns",
+						"dns": { "provider": "cloudflare", "discover": true` + interval + ` }
+					},
+					"routes": [{ "match": { "path": "/" }, "action": "a" }]
+				}
+			},
+			"actions": {
+				"a": { "type": "proxy", "upstream": "localhost:80" }
+			}
+		}`
+	}
+
+	for _, tc := range []struct {
+		interval string
+		want     time.Duration
+	}{
+		{"", 10 * time.Minute},
+		{`, "discover_interval": "1m"`, time.Minute},
+		{`, "discover_interval": "0s"`, 0},
+	} {
+		cfg, err := Load([]byte(raw(tc.interval)))
+		if err != nil {
+			t.Fatalf("load %q: %v", tc.interval, err)
+		}
+		if got := cfg.Services["web"].ACME.DNS.RediscoverInterval(); got != tc.want {
+			t.Errorf("interval %q: got %v, want %v", tc.interval, got, tc.want)
+		}
+	}
+
+	_, err := Load([]byte(raw(`, "discover_interval": "-1m"`)))
+	if err == nil || !strings.Contains(err.Error(), "acme.dns.discover_interval must not be negative") {
+		t.Errorf("expected negative interval error, got: %v", err)
+	}
+}
+
 func TestLoad_PluginUsageInterval(t *testing.T) {
 	raw := func(interval string) string {
 		return `{

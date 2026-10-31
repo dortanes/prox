@@ -1,10 +1,116 @@
 package server
 
 import (
+	"context"
+	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/dortanes/prox/internal/config"
 )
+
+type fakeDomainManager struct {
+	mu      sync.Mutex
+	domains []string
+	applied chan []string
+}
+
+func newFakeDomainManager(domains ...string) *fakeDomainManager {
+	return &fakeDomainManager{domains: domains, applied: make(chan []string, 8)}
+}
+
+func (f *fakeDomainManager) ManagedDomains() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.domains)
+}
+
+func (f *fakeDomainManager) ManageDomains(_ context.Context, domains []string) error {
+	f.mu.Lock()
+	f.domains = domains
+	f.mu.Unlock()
+	f.applied <- domains
+	return nil
+}
+
+func TestRediscoverZones_AppliesChangedZones(t *testing.T) {
+	known := []string{"example.com", "*.example.com"}
+	added := []string{"example.com", "*.example.com", "example.org", "*.example.org"}
+
+	m := newFakeDomainManager(known...)
+	var mu sync.Mutex
+	calls := 0
+	discover := func(context.Context) ([]string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if calls <= 3 {
+			return known, nil
+		}
+		return added, nil
+	}
+
+	g := &Group{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		g.rediscoverZones(ctx, "web", m, time.Millisecond, discover)
+		close(done)
+	}()
+
+	select {
+	case got := <-m.applied:
+		mu.Lock()
+		n := calls
+		mu.Unlock()
+		if n < 4 {
+			t.Errorf("applied after %d discoveries, want the unchanged ones skipped", n)
+		}
+		if !slicesEqual(got, added) {
+			t.Errorf("applied %v, want %v", got, added)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("new zone was not applied")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("rediscovery did not stop after cancel")
+	}
+}
+
+func TestRediscoverZones_DropsResultAfterCancel(t *testing.T) {
+	m := newFakeDomainManager("example.com", "*.example.com")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	discover := func(context.Context) ([]string, error) {
+		close(started)
+		<-release
+		return []string{"example.org", "*.example.org"}, nil
+	}
+
+	g := &Group{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		g.rediscoverZones(ctx, "web", m, time.Millisecond, discover)
+		close(done)
+	}()
+
+	<-started
+	cancel()
+	close(release)
+	<-done
+
+	select {
+	case got := <-m.applied:
+		t.Errorf("cancelled rediscovery applied %v", got)
+	default:
+	}
+}
 
 func TestExtractDomains(t *testing.T) {
 	routes := []*config.Route{
