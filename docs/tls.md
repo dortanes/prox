@@ -214,6 +214,8 @@ With this configuration, prox:
 3. Fetches the zone list again every `discover_interval` (10 minutes by default) and on reload, issues certificates for new zones and stops renewing certificates for zones that are gone
 4. Only requests new certificates when none exist or renewal is due
 
+If the zone list cannot be fetched at startup, prox falls back to the domains in the service's routes. When the routes name no domain either (for example a `*.**` route), the service starts with no certificates and rejects TLS handshakes. prox then fetches the zone list again after 15 seconds, doubling the delay up to `discover_interval`, and starts managing the zones as soon as a fetch succeeds, with no restart or reload. After that it returns to the normal `discover_interval`. With `discover_interval: "0s"` there are no retries: only a reload or restart fetches the zone list again.
+
 !!! tip
     This is ideal for multi-domain setups where domains are added frequently. Add a domain in Cloudflare and prox issues its certificate within one `discover_interval`. Reload prox to pick it up immediately.
 

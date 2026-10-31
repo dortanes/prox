@@ -690,42 +690,50 @@ func (g *Group) startACME(ctx context.Context, cfg *config.Config) {
 			continue
 		}
 
-		g.acmeMu.Lock()
-		g.restartRediscovery(ms, svc.ACME)
-		g.acmeMu.Unlock()
+		g.startServiceACME(ctx, ms, svc)
+	}
+}
 
-		domains := ms.acme.ManagedDomains()
+// startServiceACME starts zone rediscovery, which retries a failed discovery
+// on its own, then hands the service's initial domains to its ACME manager.
+func (g *Group) startServiceACME(ctx context.Context, ms *managedServer, svc *config.Service) {
+	// Held across discovery so a retry that succeeds meanwhile is not overwritten by the route fallback.
+	g.acmeMu.Lock()
+	defer g.acmeMu.Unlock()
 
-		// If no explicit domains, try DNS provider discovery.
-		if len(domains) == 0 && svc.ACME.DNS != nil && svc.ACME.DNS.Discover {
-			discovered, err := proxacme.DiscoverDomains(ctx, svc.ACME.DNS)
-			if err != nil {
-				slog.Error("acme: domain discovery failed",
-					"service", ms.name,
-					"err", err,
-				)
-			} else {
-				domains = discovered
-			}
-		}
+	g.restartRediscovery(ms, svc.ACME)
 
-		// Fall back to route auto-discovery.
-		if len(domains) == 0 {
-			domains = extractDomains(svc.Routes)
-		}
+	domains := ms.acme.ManagedDomains()
 
-		if len(domains) == 0 {
-			slog.Warn("acme: no domains to manage", "service", ms.name)
-			continue
-		}
-
-		if err := ms.acme.ManageDomains(ctx, domains); err != nil {
-			slog.Error("acme: failed to manage domains",
+	// If no explicit domains, try DNS provider discovery.
+	if len(domains) == 0 && svc.ACME.DNS != nil && svc.ACME.DNS.Discover {
+		discovered, err := discoverDomains(ctx, svc.ACME.DNS)
+		if err != nil {
+			slog.Error("acme: domain discovery failed",
 				"service", ms.name,
-				"domains", domains,
 				"err", err,
 			)
+		} else {
+			domains = discovered
 		}
+	}
+
+	// Fall back to route auto-discovery.
+	if len(domains) == 0 {
+		domains = extractDomains(svc.Routes)
+	}
+
+	if len(domains) == 0 {
+		slog.Warn("acme: no domains to manage", "service", ms.name)
+		return
+	}
+
+	if err := ms.acme.ManageDomains(ctx, domains); err != nil {
+		slog.Error("acme: failed to manage domains",
+			"service", ms.name,
+			"domains", domains,
+			"err", err,
+		)
 	}
 }
 
@@ -741,7 +749,7 @@ func (g *Group) syncACMEDomains(ms *managedServer, svc *config.Service) {
 	if len(svc.ACME.Domains) > 0 {
 		domains = svc.ACME.Domains
 	} else if svc.ACME.DNS != nil && svc.ACME.DNS.Discover {
-		discovered, err := proxacme.DiscoverDomains(context.Background(), svc.ACME.DNS)
+		discovered, err := discoverDomains(context.Background(), svc.ACME.DNS)
 		if err != nil {
 			slog.Error("acme: domain discovery failed on reload",
 				"service", ms.name,
@@ -773,21 +781,37 @@ func (g *Group) restartRediscovery(ms *managedServer, acme *config.ACMEConfig) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ms.stopRediscovery = cancel
 	go g.rediscoverZones(ctx, ms.name, ms.acme, dns.RediscoverInterval(), func(ctx context.Context) ([]string, error) {
-		return proxacme.DiscoverDomains(ctx, dns)
+		return discoverDomains(ctx, dns)
 	})
 }
 
-// rediscoverZones fetches the zone list every interval and applies changes
-// until ctx is cancelled.
-func (g *Group) rediscoverZones(ctx context.Context, service string, m domainManager, every time.Duration, discover func(context.Context) ([]string, error)) {
-	t := time.NewTicker(every)
-	defer t.Stop()
+// Variables so tests can replace the provider and shorten the retries.
+var (
+	discoverDomains = proxacme.DiscoverDomains
 
+	// rediscoverRetry is the first retry delay while a service manages no
+	// domains; it doubles up to the rediscovery interval.
+	rediscoverRetry = 15 * time.Second
+)
+
+// rediscoverZones fetches the zone list every interval and applies changes
+// until ctx is cancelled. While m manages no domains it retries sooner.
+func (g *Group) rediscoverZones(ctx context.Context, service string, m domainManager, every time.Duration, discover func(context.Context) ([]string, error)) {
+	first := rediscoverRetry
+	retry := first
 	for {
+		wait := every
+		if len(m.ManagedDomains()) == 0 {
+			wait = min(retry, every)
+			retry = min(retry*2, every)
+		} else {
+			retry = first
+		}
+
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-time.After(wait):
 		}
 
 		domains, err := discover(ctx)
