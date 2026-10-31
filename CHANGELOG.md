@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/dortanes/prox/compare/v1.2.1...v1.3.0) (2026-10-31)
+
+
+### Features
+
+* **acme:** ✨ rediscover DNS zones periodically ([cdc8afe](https://github.com/dortanes/prox/commit/cdc8afe94215cddc4e88df7020f122f8b4f4980f))
+
+
+### Bug Fixes
+
+* **acme:** 🐛 stop renewing domains no longer managed ([18db266](https://github.com/dortanes/prox/commit/18db266d8ac43321ca8f22beb1281bd26ff468f2))
+* **server:** 🐛 retry zone discovery after a failed start ([cf8ee6e](https://github.com/dortanes/prox/commit/cf8ee6e557ab8433facd7183ef3f56492e60503b))
+
 ## [1.2.1](https://github.com/dortanes/prox/compare/v1.2.0...v1.2.1) (2026-10-28)
 
 
