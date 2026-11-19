@@ -132,6 +132,17 @@ type CertStatus struct {
 	Status  string     `json:"status"` // "active", "pending"
 	Expires *time.Time `json:"expires,omitempty"`
 	Issuer  string     `json:"issuer,omitempty"`
+	Names   []string   `json:"names,omitempty"`
+	Serial  string     `json:"serial,omitempty"` // hexadecimal
+	Source  string     `json:"source,omitempty"` // "acme" or the certificate file
+}
+
+// IssuerName returns the display name of a certificate's issuer.
+func IssuerName(leaf *x509.Certificate) string {
+	if len(leaf.Issuer.Organization) > 0 {
+		return leaf.Issuer.Organization[0]
+	}
+	return leaf.Issuer.CommonName
 }
 
 // CertificateStatus returns the status of all managed certificates.
@@ -152,7 +163,7 @@ func (m *Manager) CertificateStatus() []CertStatus {
 
 // certStatusForDomain queries the TLS cache for a single domain.
 func (m *Manager) certStatusForDomain(domain string) CertStatus {
-	cs := CertStatus{Domain: domain, Status: "pending"}
+	cs := CertStatus{Domain: domain, Status: "pending", Source: "acme"}
 
 	// Query the certificate cache directly to avoid panic during synthetic handshake.
 	certs := m.cache.AllMatchingCertificates(domain)
@@ -171,11 +182,9 @@ func (m *Manager) certStatusForDomain(domain string) CertStatus {
 	if leaf != nil {
 		expires := leaf.NotAfter
 		cs.Expires = &expires
-		if len(leaf.Issuer.Organization) > 0 {
-			cs.Issuer = leaf.Issuer.Organization[0]
-		} else if leaf.Issuer.CommonName != "" {
-			cs.Issuer = leaf.Issuer.CommonName
-		}
+		cs.Issuer = IssuerName(leaf)
+		cs.Names = leaf.DNSNames
+		cs.Serial = leaf.SerialNumber.Text(16)
 	}
 
 	return cs

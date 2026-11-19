@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dortanes/prox/internal/access"
 	"github.com/dortanes/prox/internal/balancer"
 	"github.com/dortanes/prox/internal/config"
 	"github.com/dortanes/prox/internal/throttle"
@@ -38,6 +39,9 @@ type MatchResult struct {
 	key           string            // group key Target was picked from ("" for a flat pick)
 	pinned        bool              // a plugin pinned Target; a retry does not replace it
 	tried         []string          // targets whose dial failed for this request
+	client        string            // client IP for address-based balancing ("" otherwise)
+	id            string            // explicit route id ("" when unset)
+	Denied        bool              // the route's access rules refuse this client; no target is selected
 
 	// Speed limiting — populated from route config.
 	// Shared buckets are route-wide; BPS rates are for per-connection bucket creation.
@@ -79,7 +83,7 @@ func (m *MatchResult) SelectGroup(group string) (string, bool) {
 		m.bal.Done(m.Target)
 	}
 	m.key = group
-	m.Target = kb.NextKeyed(group)
+	m.Target = balancer.Pick(kb, group, m.client, nil)
 	return m.Target, true
 }
 
@@ -100,11 +104,7 @@ func (m *MatchResult) Retry(cause error) string {
 		return ""
 	}
 	m.tried = append(m.tried, failed)
-	if kb, ok := m.bal.(balancer.KeyedBalancer); ok && m.key != "" {
-		m.Target = kb.NextKeyedExcept(m.key, m.tried)
-	} else {
-		m.Target = m.bal.NextExcept(m.tried)
-	}
+	m.Target = balancer.Pick(m.bal, m.key, m.client, m.tried)
 	return m.Target
 }
 
@@ -141,8 +141,12 @@ func (m *MatchResult) SelectTarget(target string) bool {
 	return false
 }
 
-// RouteID returns a compact identifier for this route (e.g. "web:0").
+// RouteID returns a compact identifier for this route (e.g. "web:0", or
+// "web:api" when the route sets an id).
 func (m *MatchResult) RouteID(service string) string {
+	if m.id != "" {
+		return service + ":" + m.id
+	}
 	return service + ":" + strconv.Itoa(m.RouteIndex)
 }
 
@@ -159,13 +163,40 @@ type Router struct {
 	isCatchAllOnly   bool // true if there is only one catch-all route
 	catchAllAction   string
 	hasSpeed         bool // true if any route has speed limiting
+	hasAccess        bool // true if any route has access rules
 }
 
 // HasSpeed returns true if any route in this router has speed limiting configured.
 func (rt *Router) HasSpeed() bool { return rt.hasSpeed }
 
+// HasAccess returns true if any route has access rules; those are evaluated by
+// Match only.
+func (rt *Router) HasAccess() bool { return rt.hasAccess }
+
+// selectTarget fills in the access verdict and the balancer's choice.
+func (cr *compiledRoute) selectTarget(result *MatchResult, r *http.Request, key string) {
+	result.id = cr.id
+	if !cr.access.AllowsRemote(r.RemoteAddr) {
+		result.Denied = true
+		return
+	}
+	if cr.bal == nil {
+		return
+	}
+	if _, keyed := cr.bal.(balancer.KeyedBalancer); keyed {
+		result.key = key
+	}
+	if cr.byClient {
+		result.client = balancer.ClientHost(r.RemoteAddr)
+	}
+	result.Target = balancer.Pick(cr.bal, result.key, result.client, nil)
+	result.bal = cr.bal
+}
+
 // compiledRoute is an optimized, pre-processed representation of a config route.
 type compiledRoute struct {
+	id      string
+	access  *access.List // nil = everyone
 	action  string
 	paths   []pathEntry     // one or more path patterns (OR logic); empty = match all
 	methods map[string]bool // nil means "all methods"
@@ -181,7 +212,8 @@ type compiledRoute struct {
 	forwardProxy bool
 
 	// Load balancing.
-	bal balancer.Balancer // nil = no balancing
+	bal      balancer.Balancer // nil = no balancing
+	byClient bool              // the strategy chooses by client address
 
 	// Route-level variables from "set".
 	vars map[string]string
@@ -206,8 +238,13 @@ func New(routes []*config.Route) *Router {
 
 	for _, r := range routes {
 		cr := &compiledRoute{
+			id:     r.ID,
 			action: r.Action.Name,
 		}
+		if r.Access != nil {
+			cr.access = access.Compile(r.Access.Allow, r.Access.Deny)
+		}
+		cr.byClient = r.Balancer != nil && r.Balancer.Type == config.BalancerIPHash
 
 		// Nil match = catch-all route (matches everything).
 		if r.Match != nil {
@@ -276,8 +313,8 @@ func New(routes []*config.Route) *Router {
 		if cr.downloadBucket != nil || cr.uploadBucket != nil || cr.downloadBps > 0 || cr.uploadBps > 0 {
 			rt.hasSpeed = true
 		}
-		if rt.needsDomainMatch && rt.hasSpeed {
-			break
+		if cr.access != nil {
+			rt.hasAccess = true
 		}
 	}
 
@@ -371,10 +408,7 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 			UploadBps:      route.uploadBps,
 		}
 
-		if route.bal != nil {
-			result.Target = route.bal.Next()
-			result.bal = route.bal
-		}
+		route.selectTarget(result, r, "")
 
 		ctx := context.WithValue(r.Context(), matchResultKey, result)
 		return r.WithContext(ctx), route.action
@@ -417,16 +451,11 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 			UploadBps:      route.uploadBps,
 		}
 
-		// Select a target from the balancer if present.
-		if route.bal != nil {
-			if kb, ok := route.bal.(balancer.KeyedBalancer); ok && len(captures) > 0 {
-				result.key = captures[0]
-				result.Target = kb.NextKeyed(result.key)
-			} else {
-				result.Target = route.bal.Next()
-			}
-			result.bal = route.bal
+		key := ""
+		if len(captures) > 0 {
+			key = captures[0]
 		}
+		route.selectTarget(result, r, key)
 
 		ctx := context.WithValue(r.Context(), matchResultKey, result)
 

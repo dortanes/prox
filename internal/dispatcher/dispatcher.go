@@ -11,9 +11,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dortanes/prox/internal/access"
 	"github.com/dortanes/prox/internal/balancer"
 	"github.com/dortanes/prox/internal/conntrack"
+	"github.com/dortanes/prox/internal/metrics"
 	"github.com/dortanes/prox/internal/plugin"
+	proxyproto "github.com/pires/go-proxyproto"
 )
 
 const (
@@ -29,33 +32,77 @@ type Route struct {
 	DomainGlob     bool              // true when pattern ends with "**"
 	IsPass         bool              // true for action type "pass"
 	IsDrop         bool              // true for action type "drop"
+	WholeDomain    bool              // true when the route has no path or method condition
 	Upstream       string            // dial address for pass routes (static)
 	UpstreamTpl    string            // upstream template with {target} for balanced pass routes
 	Bal            balancer.Balancer // nil = no balancing
+	ByClient       bool              // the balancer chooses by client address
+	Access         *access.List      // nil = everyone
+	ProxyProtocol  byte              // PROXY protocol version sent upstream (0 = none)
+}
+
+// Matches reports whether the lowercased server name matches the route's domain.
+func (r *Route) Matches(sniLower string) bool {
+	return matchDomain(r.DomainSegments, r.DomainGlob, sniLower)
 }
 
 // Dispatcher intercepts raw TCP connections on a listener, peeks the
 // TLS ClientHello for SNI, and dispatches: "pass" routes get a raw
 // TCP relay; everything else is fed to the HTTP server via a synthetic
-// net.Listener.
+// net.Listener. With an empty route table connections go straight to the
+// HTTP server unread.
 type Dispatcher struct {
 	routes  atomic.Pointer[[]*Route]
-	wg      sync.WaitGroup  // tracks active pass relays
-	plugins *plugin.Manager // optional, for on_connect hooks
+	wg      sync.WaitGroup                 // tracks active pass relays
+	plugins atomic.Pointer[plugin.Manager] // optional, for on_connect hooks
+	metrics *metrics.Registry              // nil when traffic is not counted
 
-	mu    sync.Mutex            // protects conns
-	conns map[net.Conn]struct{} // active relay connections
+	peeking atomic.Int64 // connections still being classified
+
+	mu        sync.Mutex            // protects conns and listeners
+	conns     map[net.Conn]struct{} // active relay connections
+	listeners []*chanListener
+}
+
+// Drain waits until accepted connections have reached the HTTP server, so that
+// a shutdown following the closing of the raw listeners does not lose them.
+func (d *Dispatcher) Drain(timeout time.Duration) {
+	d.mu.Lock()
+	listeners := d.listeners
+	d.mu.Unlock()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		pending := d.peeking.Load()
+		for _, l := range listeners {
+			pending += int64(len(l.ch))
+		}
+		if pending == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // New creates a Dispatcher with the given pre-compiled routes.
 // Routes are evaluated in order — first domain match wins.
 func New(routes []*Route, plugins *plugin.Manager) *Dispatcher {
 	d := &Dispatcher{
-		conns:   make(map[net.Conn]struct{}),
-		plugins: plugins,
+		conns: make(map[net.Conn]struct{}),
 	}
+	d.plugins.Store(plugins)
 	d.routes.Store(&routes)
 	return d
+}
+
+// SetMetrics enables traffic counting. Call it before Serve.
+func (d *Dispatcher) SetMetrics(reg *metrics.Registry) {
+	d.metrics = reg
+}
+
+// SetPlugins replaces the plugin manager used for new connections.
+func (d *Dispatcher) SetPlugins(plugins *plugin.Manager) {
+	d.plugins.Store(plugins)
 }
 
 // SwapRoutes atomically replaces the dispatcher's route table.
@@ -71,6 +118,9 @@ func (d *Dispatcher) SwapRoutes(routes []*Route) {
 // http.Server.Serve / ServeTLS.
 func (d *Dispatcher) Serve(ln net.Listener) net.Listener {
 	httpLn := newChanListener(ln.Addr())
+	d.mu.Lock()
+	d.listeners = append(d.listeners, httpLn)
+	d.mu.Unlock()
 
 	d.wg.Add(1)
 	go func() {
@@ -119,9 +169,15 @@ func (d *Dispatcher) acceptLoop(ln net.Listener, httpLn *chanListener) {
 			httpLn.Close()
 			return
 		}
+		if len(*d.routes.Load()) == 0 {
+			httpLn.Deliver(conn)
+			continue
+		}
 		d.wg.Add(1)
+		d.peeking.Add(1)
 		go func() {
 			defer d.wg.Done()
+			defer d.peeking.Add(-1)
 			d.handleConn(conn, httpLn)
 		}()
 	}
@@ -152,8 +208,9 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 
 	// Walk routes in config order — first domain match wins.
 	routes := *d.routes.Load()
+	plugins := d.plugins.Load()
 	for _, route := range routes {
-		if !matchDomain(route.DomainSegments, route.DomainGlob, sniLower) {
+		if !route.Matches(sniLower) {
 			continue
 		}
 
@@ -168,12 +225,22 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 		}
 
 		if route.IsPass {
+			if !route.Access.AllowsRemote(conn.RemoteAddr().String()) {
+				slog.Debug("l4 access denied",
+					"sni", sni,
+					"pattern", route.Domain,
+					"remote", conn.RemoteAddr(),
+				)
+				conn.Close()
+				return
+			}
+
 			// Plugin on_connect gate.
 			var pluginGroup, pluginTarget, session string
-			if d.plugins != nil && d.plugins.HasHook(route.RouteID, plugin.HookOnConnect) {
+			if plugins != nil && plugins.HasHook(route.RouteID, plugin.HookOnConnect) {
 				matches, globTail := matchDomainCaptures(route.DomainSegments, route.DomainGlob, sniLower)
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				res, err := d.plugins.OnConnect(ctx, route.RouteID, &plugin.ConnInfo{
+				res, err := plugins.OnConnect(ctx, route.RouteID, &plugin.ConnInfo{
 					RouteID:     route.RouteID,
 					Domain:      sni,
 					RemoteAddr:  conn.RemoteAddr().String(),
@@ -213,7 +280,7 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 					}
 				} else {
 					var keyed bool
-					target, keyed = route.selectTarget(sniLower, pluginGroup)
+					target, keyed = route.selectTarget(sniLower, pluginGroup, conn.RemoteAddr().String())
 					tracked = target != ""
 					if pluginGroup != "" && !keyed {
 						slog.Warn("l4 plugin group ignored: route has no keyed balancer",
@@ -242,7 +309,9 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 				"upstream", upstream,
 				"remote", conn.RemoteAddr(),
 			)
-			d.relayPass(conn, buf, upstream, route.RouteID, session)
+			d.peeking.Add(-1) // classified; the relay may outlive any drain
+			defer d.peeking.Add(1)
+			d.relayPass(conn, buf, upstream, route, session, plugins)
 
 			// Signal the balancer after relay completes.
 			if route.Bal != nil && tracked && target != "" {
@@ -275,10 +344,14 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 // a plugin's on_connect hook wins over the SNI wildcard capture; an empty group
 // falls back to that capture. The boolean reports whether the route's balancer
 // is keyed — when false, the group cannot be honoured.
-func (r *Route) selectTarget(sniLower, group string) (string, bool) {
-	kb, ok := r.Bal.(balancer.KeyedBalancer)
+func (r *Route) selectTarget(sniLower, group, remote string) (string, bool) {
+	client := ""
+	if r.ByClient {
+		client = balancer.ClientHost(remote)
+	}
+	_, ok := r.Bal.(balancer.KeyedBalancer)
 	if !ok {
-		return r.Bal.Next(), false
+		return balancer.Pick(r.Bal, "", client, nil), false
 	}
 	key := group
 	if key == "" {
@@ -287,14 +360,24 @@ func (r *Route) selectTarget(sniLower, group string) (string, bool) {
 			key = captures[0]
 		}
 	}
-	return kb.NextKeyed(key), true
+	return balancer.Pick(r.Bal, key, client, nil), true
 }
 
 // relayPass relays a pass connection. A connection carrying a session key is
 // registered so a plugin can drop it, and metered when the route has on_usage
 // subscribers.
-func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream, routeID, session string) {
+func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream string, route *Route, session string, plugins *plugin.Manager) {
 	defer client.Close()
+	routeID := route.RouteID
+
+	var traffic *conntrack.Counter
+	failed := true
+	if track := d.metrics.Begin(routeID); track != nil {
+		track.SetUpstream(upstream)
+		traffic = &conntrack.Counter{}
+		traffic.AddRx(int64(len(peekedBytes)))
+		defer func() { track.End(traffic.Rx(), traffic.Tx(), failed) }()
+	}
 
 	up, err := net.DialTimeout("tcp", upstream, upstreamDialTimeout)
 	if err != nil {
@@ -315,16 +398,28 @@ func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream, ro
 
 	var counter *conntrack.Counter
 	if session != "" {
-		if d.plugins.HasHook(routeID, plugin.HookOnUsage) {
+		if plugins.HasHook(routeID, plugin.HookOnUsage) {
 			counter = &conntrack.Counter{}
 			counter.AddRx(int64(len(peekedBytes)))
 		}
-		sessions := d.plugins.Sessions()
+		sessions := plugins.Sessions()
 		tracked := sessions.Open(routeID, session, counter, func() {
 			client.Close()
 			up.Close()
 		})
 		defer sessions.Close(tracked)
+	}
+
+	// The PROXY header must precede every client byte.
+	if route.ProxyProtocol != 0 {
+		header := proxyproto.HeaderProxyFromAddrs(route.ProxyProtocol, client.RemoteAddr(), client.LocalAddr())
+		if _, err := header.WriteTo(up); err != nil {
+			slog.Warn("l4 proxy protocol write failed",
+				"upstream", upstream,
+				"err", err,
+			)
+			return
+		}
 	}
 
 	// Replay the peeked ClientHello bytes to the upstream.
@@ -336,7 +431,8 @@ func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream, ro
 		return
 	}
 
-	_, _ = Relay(counter.Conn(client), up)
+	failed = false
+	_, _ = Relay(traffic.Conn(counter.Conn(client)), up)
 }
 
 // matchDomain checks if host matches the pattern segments.

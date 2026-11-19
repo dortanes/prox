@@ -178,7 +178,7 @@ func TestRoute_SelectTargetFromSNI(t *testing.T) {
 		"us": {"us-1:8080"},
 	})
 
-	target, keyed := route.selectTarget("de.example.com", "")
+	target, keyed := route.selectTarget("de.example.com", "", "192.0.2.1:1000")
 	if !keyed {
 		t.Fatal("expected keyed balancer")
 	}
@@ -193,7 +193,7 @@ func TestRoute_SelectTargetPluginGroupWins(t *testing.T) {
 		"us": {"us-1:8080"},
 	})
 
-	target, keyed := route.selectTarget("de.example.com", "us")
+	target, keyed := route.selectTarget("de.example.com", "us", "192.0.2.1:1000")
 	if !keyed {
 		t.Fatal("expected keyed balancer")
 	}
@@ -205,7 +205,7 @@ func TestRoute_SelectTargetPluginGroupWins(t *testing.T) {
 func TestRoute_SelectTargetUnknownGroup(t *testing.T) {
 	route := newGroupedRoute(t, map[string][]string{"de": {"de-1:8080"}})
 
-	if target, _ := route.selectTarget("de.example.com", "nope"); target != "" {
+	if target, _ := route.selectTarget("de.example.com", "nope", "192.0.2.1:1000"); target != "" {
 		t.Fatalf("expected no target for unknown group, got %q", target)
 	}
 }
@@ -219,7 +219,7 @@ func TestRoute_SelectTargetNotKeyed(t *testing.T) {
 		Bal:            balancer.NewRoundRobin([]string{"flat-1:8080"}),
 	}
 
-	target, keyed := route.selectTarget("de.example.com", "us")
+	target, keyed := route.selectTarget("de.example.com", "us", "192.0.2.1:1000")
 	if keyed {
 		t.Fatal("expected non-keyed balancer")
 	}

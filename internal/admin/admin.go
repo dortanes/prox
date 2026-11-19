@@ -9,6 +9,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -16,10 +17,14 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/dortanes/prox/internal/config"
+	"github.com/dortanes/prox/internal/metrics"
 )
+
+const listenRetryInterval = 100 * time.Millisecond
 
 // --- Response types ---
 
@@ -39,6 +44,11 @@ type ReloadResult struct {
 	Routes   int    `json:"routes,omitempty"`
 	Services int    `json:"services,omitempty"`
 	Error    string `json:"error,omitempty"`
+
+	// Applied lists what took effect; RestartRequired lists changed settings
+	// that keep their old value until the next restart.
+	Applied         []string `json:"applied"`
+	RestartRequired []string `json:"restart_required"`
 }
 
 // CertEntry is one item in the GET /api/certs response.
@@ -47,10 +57,14 @@ type CertEntry struct {
 	Status  string     `json:"status"`
 	Expires *time.Time `json:"expires,omitempty"`
 	Issuer  string     `json:"issuer,omitempty"`
+	Names   []string   `json:"names,omitempty"`
+	Serial  string     `json:"serial,omitempty"`
+	Source  string     `json:"source,omitempty"`
 }
 
 // RouteEntry is one item in the GET /api/routes response.
 type RouteEntry struct {
+	ID       string     `json:"id"`
 	Service  string     `json:"service"`
 	Index    int        `json:"index"`
 	Match    *MatchInfo `json:"match,omitempty"`
@@ -104,6 +118,11 @@ type Deps struct {
 	CertStatus   func() []CertEntry
 	PluginInfo   func() []PluginEntry
 	BalancerInfo func() []BalancerEntry
+	Metrics      func() metrics.Snapshot
+
+	// ListenRetry is how long to wait for a TCP address still held by the
+	// process being replaced.
+	ListenRetry time.Duration
 }
 
 // Server is the admin API HTTP server.
@@ -113,6 +132,7 @@ type Server struct {
 	deps       Deps
 	token      string
 	unixPath   string // non-empty when using a Unix socket (for cleanup)
+	unixInfo   os.FileInfo
 }
 
 // New creates an admin server bound to the given address.
@@ -133,6 +153,7 @@ func New(cfg *config.AdminConfig, deps Deps) *Server {
 	mux.HandleFunc("/api/plugins", s.requireMethod(http.MethodGet, s.handlePlugins))
 	mux.HandleFunc("/api/balancers", s.requireMethod(http.MethodGet, s.handleBalancers))
 	mux.HandleFunc("/api/config", s.requireMethod(http.MethodGet, s.handleConfig))
+	mux.HandleFunc("/api/metrics", s.requireMethod(http.MethodGet, s.handleMetrics))
 
 	s.httpServer = &http.Server{
 		Handler:      s.authMiddleware(mux),
@@ -165,8 +186,11 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	slog.Debug("admin API shutting down")
 	err := s.httpServer.Shutdown(ctx)
-	if s.unixPath != "" {
-		os.Remove(s.unixPath)
+	// After a restart the path may already belong to the new process.
+	if s.unixPath != "" && s.unixInfo != nil {
+		if info, statErr := os.Stat(s.unixPath); statErr == nil && os.SameFile(info, s.unixInfo) {
+			os.Remove(s.unixPath)
+		}
 	}
 	return err
 }
@@ -196,10 +220,25 @@ func (s *Server) listen() (net.Listener, error) {
 			return nil, fmt.Errorf("chmod socket: %w", err)
 		}
 
+		// Shutdown removes the path, and only while it is still this socket.
+		ln.(*net.UnixListener).SetUnlinkOnClose(false)
+		s.unixInfo, err = os.Stat(path)
+		if err != nil {
+			ln.Close()
+			return nil, fmt.Errorf("stat socket: %w", err)
+		}
+
 		return ln, nil
 	}
 
-	return net.Listen("tcp", addr)
+	deadline := time.Now().Add(s.deps.ListenRetry)
+	for {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil || !errors.Is(err, syscall.EADDRINUSE) || time.Now().After(deadline) {
+			return ln, err
+		}
+		time.Sleep(listenRetryInterval)
+	}
 }
 
 func (s *Server) listenAddr() string {
@@ -293,6 +332,7 @@ func (s *Server) handleRoutes(w http.ResponseWriter, _ *http.Request) {
 		svc := cfg.Services[svcName]
 		for i, route := range svc.Routes {
 			entry := RouteEntry{
+				ID:      config.RouteID(svcName, i, route),
 				Service: svcName,
 				Index:   i,
 				Action:  route.Action.Name,
@@ -354,6 +394,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 
 	sanitized := sanitizeConfig(cfg)
 	writeJSON(w, http.StatusOK, sanitized)
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	snapshot := metrics.Snapshot{Routes: []metrics.Entry{}, Upstreams: []metrics.Entry{}}
+	if s.deps.Metrics != nil {
+		snapshot = s.deps.Metrics()
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 // --- Helpers ---

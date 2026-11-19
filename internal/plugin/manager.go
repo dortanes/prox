@@ -26,7 +26,8 @@ const (
 type Binding struct {
 	Name          string // human-readable alias from config
 	RouteID       string
-	Plugin        string // absolute path to plugin binary
+	Plugin        string   // absolute path to plugin binary
+	Args          []string // command-line arguments for the plugin process
 	Match         *MatchInfo
 	Balancer      balancer.Balancer
 	Timeout       time.Duration // per-request plugin call timeout
@@ -69,6 +70,7 @@ type Manager struct {
 	bindings     []*Binding
 	routes       map[string]*RouteInfo // all routes with balancers (routeID → info)
 	cancel       context.CancelFunc
+	ctx          context.Context // set by Start; parent of every plugin's supervision
 	wg           sync.WaitGroup
 	index        atomic.Pointer[hookIndex]  // lock-free hot-path lookup
 	speeds       atomic.Pointer[speedIndex] // lock-free speed limit lookup
@@ -87,10 +89,12 @@ type disconnectMsg struct {
 type managed struct {
 	name    string
 	path    string
+	args    []string
 	proc    *Process
-	restart int      // consecutive restart count for backoff
-	caller  *Caller  // non-nil when plugin declared socket hooks
-	hooks   []string // declared hook capabilities
+	stop    context.CancelFunc // ends supervision, so a deliberate stop is not restarted
+	restart int                // consecutive restart count for backoff
+	caller  *Caller            // non-nil when plugin declared socket hooks
+	hooks   []string           // declared hook capabilities
 
 	// Set while the plugin subscribes to on_usage; the meter outlives restarts.
 	meter     *conntrack.Meter
@@ -133,21 +137,18 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.ctx = ctx
 
 	// Deduplicate plugin paths — one process per unique binary.
-	needed := make(map[string]string) // path → name
-	for _, b := range m.bindings {
-		if _, ok := needed[b.Plugin]; !ok {
-			needed[b.Plugin] = b.Name
-		}
-	}
+	needed := neededPlugins(m.bindings)
 
-	for pluginPath, pluginName := range needed {
+	for pluginPath, first := range needed {
 		if _, ok := m.processes[pluginPath]; ok {
 			continue // already running
 		}
+		pluginName := first.Name
 
-		proc, err := startProcess(pluginName, pluginPath)
+		proc, err := startProcess(pluginName, pluginPath, first.Args)
 		if err != nil {
 			slog.Error("plugin start failed",
 				"plugin", pluginName,
@@ -156,8 +157,9 @@ func (m *Manager) Start(ctx context.Context) error {
 			continue
 		}
 
-		mg := &managed{name: pluginName, path: pluginPath, proc: proc}
+		mg := &managed{name: pluginName, path: pluginPath, args: first.Args, proc: proc}
 		m.processes[pluginPath] = mg
+		pluginCtx := m.superviseCtx(mg)
 
 		slog.Debug("plugin started",
 			"plugin", pluginName,
@@ -188,7 +190,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.wg.Add(1)
 		go func(mg *managed) {
 			defer m.wg.Done()
-			m.processPushes(ctx, mg)
+			m.processPushes(pluginCtx, mg)
 		}(mg)
 	}
 
@@ -202,8 +204,32 @@ func (m *Manager) Start(ctx context.Context) error {
 	return nil
 }
 
+// superviseCtx returns the context supervising mg. The caller holds m.mu.
+func (m *Manager) superviseCtx(mg *managed) context.Context {
+	parent := m.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	mg.stop = cancel
+	return ctx
+}
+
+// neededPlugins returns the first binding of each plugin binary: one process
+// runs per path.
+func neededPlugins(bindings []*Binding) map[string]*Binding {
+	needed := make(map[string]*Binding)
+	for _, b := range bindings {
+		if _, ok := needed[b.Plugin]; !ok {
+			needed[b.Plugin] = b
+		}
+	}
+	return needed
+}
+
 // Reconfigure updates bindings and reconfigures running plugins.
-// New plugins are started, removed plugins are stopped.
+// New plugins are started; removed plugins and those whose arguments changed
+// are stopped, and the latter start again with the new arguments.
 func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -212,19 +238,15 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 	m.routes = routes
 
 	// Determine which plugins are still needed.
-	needed := make(map[string]string) // path → name
-	for _, b := range bindings {
-		if _, ok := needed[b.Plugin]; !ok {
-			needed[b.Plugin] = b.Name
-		}
-	}
+	needed := neededPlugins(bindings)
 
 	// Stop plugins no longer referenced.
 	for path, mg := range m.processes {
-		if _, ok := needed[path]; !ok {
+		if b, ok := needed[path]; !ok || !slices.Equal(b.Args, mg.args) {
 			slog.Debug("plugin stopped",
 				"plugin", mg.name,
 			)
+			mg.stop()
 			m.endUsageLocked(mg, true)
 			if mg.caller != nil {
 				mg.caller.Close()
@@ -235,11 +257,12 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 	}
 
 	// Start new plugins and reconfigure existing ones.
-	for pluginPath, pluginName := range needed {
+	for pluginPath, first := range needed {
+		pluginName := first.Name
 		mg, exists := m.processes[pluginPath]
 
 		if !exists {
-			proc, err := startProcess(pluginName, pluginPath)
+			proc, err := startProcess(pluginName, pluginPath, first.Args)
 			if err != nil {
 				slog.Error("plugin start failed",
 					"plugin", pluginName,
@@ -248,8 +271,9 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 				continue
 			}
 
-			mg = &managed{name: pluginName, path: pluginPath, proc: proc}
+			mg = &managed{name: pluginName, path: pluginPath, args: first.Args, proc: proc}
 			m.processes[pluginPath] = mg
+			pluginCtx := m.superviseCtx(mg)
 
 			slog.Debug("plugin started",
 				"plugin", pluginName,
@@ -260,7 +284,7 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 			m.wg.Add(1)
 			go func(mg *managed) {
 				defer m.wg.Done()
-				m.processPushes(context.Background(), mg)
+				m.processPushes(pluginCtx, mg)
 			}(mg)
 		}
 
@@ -773,7 +797,7 @@ func (m *Manager) restartPlugin(ctx context.Context, mg *managed) {
 	case <-time.After(delay):
 	}
 
-	proc, err := startProcess(mg.name, mg.path)
+	proc, err := startProcess(mg.name, mg.path, mg.args)
 	if err != nil {
 		slog.Error("plugin restart failed",
 			"plugin", mg.name,

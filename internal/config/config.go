@@ -8,6 +8,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/titanous/json5"
@@ -41,6 +42,7 @@ type LoggingConfig struct {
 // Plugin defines global configuration for an external plugin.
 type Plugin struct {
 	Path          string   `json:"path"`
+	Args          []string `json:"args,omitempty"`           // command-line arguments for the plugin process
 	Autostart     bool     `json:"autostart,omitempty"`      // start at proxy startup without route bindings
 	UsageInterval Duration `json:"usage_interval,omitempty"` // on_usage report interval (default: 15s)
 }
@@ -48,15 +50,17 @@ type Plugin struct {
 // Service defines a single listener with its routing rules.
 // Plugins declared at the service level apply to all routes in the service.
 type Service struct {
-	Listen  string        `json:"listen"`
-	TLS     bool          `json:"tls"`
-	TLSCert string        `json:"tls_cert,omitempty"`
-	TLSKey  string        `json:"tls_key,omitempty"`
-	ACME    *ACMEConfig   `json:"acme,omitempty"`
-	H2      *bool         `json:"h2,omitempty"` // Enable HTTP/2 on TLS listener (default: true). Set to false for WebSocket support.
-	Config  *ServerConfig `json:"config,omitempty"`
-	Plugins []string      `json:"plugins,omitempty"`
-	Routes  []*Route      `json:"routes"`
+	Listen  string `json:"listen"`
+	TLS     bool   `json:"tls"`
+	TLSCert string `json:"tls_cert,omitempty"`
+	TLSKey  string `json:"tls_key,omitempty"`
+	// StrictSNI fails the handshake when no certificate matches the server name.
+	StrictSNI bool          `json:"strict_sni,omitempty"`
+	ACME      *ACMEConfig   `json:"acme,omitempty"`
+	H2        *bool         `json:"h2,omitempty"` // Enable HTTP/2 on TLS listener (default: true). Set to false for WebSocket support.
+	Config    *ServerConfig `json:"config,omitempty"`
+	Plugins   []string      `json:"plugins,omitempty"`
+	Routes    []*Route      `json:"routes"`
 }
 
 // ServerConfig tunes HTTP server and proxy transport behavior per service.
@@ -219,7 +223,9 @@ type ACMES3Config struct {
 // Plugins can dynamically manage balancer targets at runtime.
 // Set defines route-level variables available as {key} in upstream templates.
 type Route struct {
+	ID            string            `json:"id,omitempty"` // stable identifier, replaces the index in the route id
 	Match         *Match            `json:"match"`
+	Access        *AccessConfig     `json:"access,omitempty"`
 	Plugins       []string          `json:"plugins,omitempty"`
 	PluginTimeout Duration          `json:"plugin_timeout,omitempty"` // per-request timeout for plugin hooks (default: 5s)
 	Balancer      *BalancerConfig   `json:"balancer,omitempty"`
@@ -227,6 +233,22 @@ type Route struct {
 	Set           map[string]string `json:"set,omitempty"`
 	Action        ActionRef         `json:"action"`
 	AccessLog     string            `json:"access_log,omitempty"` // per-route access log file path
+}
+
+// RouteID returns the identifier of a service's route: "service:id" when the
+// route sets one, otherwise "service:index".
+func RouteID(service string, index int, route *Route) string {
+	if route.ID != "" {
+		return service + ":" + route.ID
+	}
+	return service + ":" + strconv.Itoa(index)
+}
+
+// AccessConfig restricts a route by client address. Entries are IP addresses
+// or CIDR ranges; deny wins, and a non-empty allow admits only its entries.
+type AccessConfig struct {
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
 }
 
 // Match defines the criteria for a route to activate.
@@ -250,6 +272,7 @@ const (
 	BalancerRoundRobin BalancerType = "roundrobin"
 	BalancerRandom     BalancerType = "random"
 	BalancerLeastConn  BalancerType = "leastconn"
+	BalancerIPHash     BalancerType = "iphash"
 )
 
 // BalancerConfig defines a load balancer for distributing requests across targets.
@@ -298,6 +321,14 @@ type Action struct {
 	Timeout  Duration `json:"timeout,omitempty"`
 	Stream   bool     `json:"stream,omitempty"` // Use raw HTTP tunnel for bidirectional streaming.
 	Proto    string   `json:"proto,omitempty"`  // Upstream protocol: "" (auto), "h2" (HTTP/2 cleartext).
+
+	// ProxyProtocol sends a PROXY protocol header ("v1" or "v2") to the
+	// upstream of a pass action.
+	ProxyProtocol string `json:"proxy_protocol,omitempty"`
+
+	// Headers changed on responses to the client; removal runs first.
+	ResponseHeaders       map[string]string `json:"response_headers,omitempty"`
+	RemoveResponseHeaders []string          `json:"remove_response_headers,omitempty"`
 
 	// Fallback action name — invoked when the primary action fails
 	// (e.g. no target selected, upstream unreachable).

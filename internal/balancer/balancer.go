@@ -2,7 +2,9 @@
 package balancer
 
 import (
+	"hash/fnv"
 	"math/rand"
+	"net"
 	"sync"
 	"sync/atomic"
 )
@@ -182,6 +184,66 @@ func (r *Random) ejections() *Ejections { return r.ej }
 func (r *Random) Targets() []string {
 	p := r.pool.Load()
 	return append([]string(nil), p.targets...)
+}
+
+// ClientAffine is implemented by balancers that can choose by client address.
+type ClientAffine interface {
+	// NextClient selects a target for the client from the group named by key
+	// ("" for the flat pool), skipping the excluded targets.
+	NextClient(key, client string, exclude []string) string
+}
+
+// Pick selects a target using whatever the balancer supports: the client
+// address, then the group key, then its plain strategy.
+func Pick(b Balancer, key, client string, exclude []string) string {
+	if ca, ok := b.(ClientAffine); ok && client != "" {
+		return ca.NextClient(key, client, exclude)
+	}
+	if kb, ok := b.(KeyedBalancer); ok && key != "" {
+		return kb.NextKeyedExcept(key, exclude)
+	}
+	return b.NextExcept(exclude)
+}
+
+// ClientHost returns the IP of a "host:port" client address.
+func ClientHost(remote string) string {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		return remote
+	}
+	return host
+}
+
+// IPHash keeps each client on one target using rendezvous hashing, so a pool
+// change only moves the clients of the targets that changed. Without a client
+// address it selects at random.
+type IPHash struct {
+	Random
+}
+
+func newIPHash(targets []string, ej *Ejections) *IPHash {
+	h := &IPHash{Random{ej: ej}}
+	h.pool.Store(&randPool{targets: targets})
+	return h
+}
+
+// NextClient returns the available target ranked highest for the client.
+func (h *IPHash) NextClient(_, client string, exclude []string) string {
+	best := ""
+	var bestScore uint64
+	for _, t := range h.pool.Load().targets {
+		if !h.ej.available(t, exclude) {
+			continue
+		}
+		d := fnv.New64a()
+		_, _ = d.Write([]byte(client))
+		_, _ = d.Write([]byte{0})
+		_, _ = d.Write([]byte(t))
+		if score := d.Sum64(); best == "" || score > bestScore {
+			best, bestScore = t, score
+		}
+	}
+	return best
 }
 
 // LeastConn routes to the target with the fewest active connections.
@@ -398,6 +460,35 @@ func (g *Grouped) NextKeyedExcept(key string, exclude []string) string {
 	return g.inner.NextExcept(exclude)
 }
 
+// NextClient is NextKeyedExcept for strategies that choose by client address.
+func (g *Grouped) NextClient(key, client string, exclude []string) string {
+	next := func(s strategy) string {
+		if ca, ok := s.(ClientAffine); ok {
+			return ca.NextClient("", client, exclude)
+		}
+		return s.NextExcept(exclude)
+	}
+	gm := g.groups.Load()
+	if gm != nil && key != "" {
+		if s, ok := gm.m[key]; ok {
+			if target := next(s); target != "" {
+				return target
+			}
+		}
+		if g.fallback {
+			return g.pickFallback(gm, exclude)
+		}
+		return ""
+	}
+	if target := next(g.inner); target != "" {
+		return target
+	}
+	if g.fallback && gm != nil {
+		return g.pickFallback(gm, exclude)
+	}
+	return ""
+}
+
 // pickFallback picks a random available target across all groups and
 // reserves it in the sub-pool that owns it, so Done() stays balanced.
 func (g *Grouped) pickFallback(gm *groupedMap, exclude []string) string {
@@ -491,7 +582,7 @@ func (g *Grouped) SwapGroupedTargets(groups map[string][]string) {
 
 // NewByType creates a flat balancer of the given type that ejects failing
 // targets with ej (nil disables ejection).
-// Valid types: "random", "leastconn", "roundrobin" (default).
+// Valid types: "random", "leastconn", "iphash", "roundrobin" (default).
 func NewByType(strategy string, targets []string, ej *Ejections) Balancer {
 	return newStrategy(strategy, targets, ej)
 }
@@ -502,6 +593,8 @@ func newStrategy(strategy string, targets []string, ej *Ejections) strategy {
 		return newRandom(targets, ej)
 	case "leastconn":
 		return newLeastConn(targets, ej)
+	case "iphash":
+		return newIPHash(targets, ej)
 	default:
 		return newRoundRobin(targets, ej)
 	}

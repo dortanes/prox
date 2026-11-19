@@ -6,8 +6,15 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
+
+	"github.com/dortanes/prox/internal/access"
 )
+
+var routeIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // ValidationError collects all validation issues into a single error.
 type ValidationError struct {
@@ -71,7 +78,9 @@ func (v *validator) validateService(name string, svc *Service) {
 		// discovered automatically alongside their matching .crt/.pem files.
 		// We can't stat the path at validation time (config may be validated
 		// before deployment), so we accept missing tls_key and let
-		// server.loadCertificates handle the error at runtime.
+		// server.loadCertSet handle the error at runtime.
+	} else if svc.StrictSNI {
+		v.addIssue("service %q: strict_sni requires tls", name)
 	}
 
 	v.validateACME(name, svc)
@@ -82,13 +91,42 @@ func (v *validator) validateService(name string, svc *Service) {
 		return
 	}
 
+	ids := make(map[string]bool, len(svc.Routes))
 	for i, route := range svc.Routes {
 		v.validateRoute(name, i, route)
+		if route.ID != "" {
+			if ids[route.ID] {
+				v.addIssue("service %q route #%d: duplicate id %q", name, i, route.ID)
+			}
+			ids[route.ID] = true
+		}
+	}
+}
+
+// validateRouteID keeps ids distinct from the numeric ids of unnamed routes.
+func (v *validator) validateRouteID(prefix, id string) {
+	if id == "" {
+		return
+	}
+	if !routeIDPattern.MatchString(id) {
+		v.addIssue("%s: id %q may only contain letters, digits, '.', '_' and '-'", prefix, id)
+	} else if _, err := strconv.Atoi(id); err == nil {
+		v.addIssue("%s: id %q must not be a number", prefix, id)
 	}
 }
 
 func (v *validator) validateRoute(svcName string, idx int, route *Route) {
 	prefix := fmt.Sprintf("service %q route #%d", svcName, idx)
+
+	v.validateRouteID(prefix, route.ID)
+	if route.Access != nil {
+		if len(route.Access.Allow) == 0 && len(route.Access.Deny) == 0 {
+			v.addIssue("%s: access requires allow or deny entries", prefix)
+		}
+		if _, err := access.Parse(route.Access.Allow, route.Access.Deny); err != nil {
+			v.addIssue("%s: access: %v", prefix, err)
+		}
+	}
 
 	// Nil match is allowed — it acts as a catch-all route.
 	if route.Match != nil {
@@ -240,6 +278,19 @@ func (v *validator) validateActions() {
 func (v *validator) validateAction(name string, action *Action) {
 	v.validatePluginNames(fmt.Sprintf("action %q", name), action.Plugins)
 
+	if action.Type != ActionTypeProxy && (len(action.ResponseHeaders) > 0 || len(action.RemoveResponseHeaders) > 0) {
+		v.addIssue("action %q: response_headers and remove_response_headers require type %q", name, ActionTypeProxy)
+	}
+
+	if action.ProxyProtocol != "" {
+		if action.Type != ActionTypePass {
+			v.addIssue("action %q: proxy_protocol requires type %q", name, ActionTypePass)
+		}
+		if action.ProxyProtocol != "v1" && action.ProxyProtocol != "v2" {
+			v.addIssue("action %q: proxy_protocol must be \"v1\" or \"v2\"", name)
+		}
+	}
+
 	switch action.Type {
 	case ActionTypeProxy:
 		v.validateProxyAction(name, action)
@@ -320,10 +371,16 @@ func (v *validator) validatePluginsRegistry() {
 		return
 	}
 
+	// One process runs per path, so entries sharing a path must agree on args.
+	argsByPath := make(map[string][]string, len(v.cfg.Plugins))
 	for name, plugin := range v.cfg.Plugins {
 		if plugin.Path == "" {
 			v.addIssue("plugin %q: path is required", name)
 		}
+		if args, seen := argsByPath[plugin.Path]; seen && !slices.Equal(args, plugin.Args) {
+			v.addIssue("plugin %q: args differ from another plugin with path %q", name, plugin.Path)
+		}
+		argsByPath[plugin.Path] = plugin.Args
 		if plugin.UsageInterval.Duration < 0 {
 			v.addIssue("plugin %q: usage_interval must not be negative", name)
 		}
@@ -367,13 +424,13 @@ func (v *validator) validateBalancer(prefix string, route *Route) {
 	bal := route.Balancer
 
 	switch bal.Type {
-	case BalancerRoundRobin, BalancerRandom, BalancerLeastConn:
+	case BalancerRoundRobin, BalancerRandom, BalancerLeastConn, BalancerIPHash:
 		// Valid.
 	case "":
 		v.addIssue("%s: balancer.type is required", prefix)
 	default:
-		v.addIssue("%s: unknown balancer type %q (expected %q, %q, or %q)",
-			prefix, bal.Type, BalancerRoundRobin, BalancerRandom, BalancerLeastConn)
+		v.addIssue("%s: unknown balancer type %q (expected %q, %q, %q, or %q)",
+			prefix, bal.Type, BalancerRoundRobin, BalancerRandom, BalancerLeastConn, BalancerIPHash)
 	}
 
 	if bal.EjectCooldown() < 0 {

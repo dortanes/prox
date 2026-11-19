@@ -152,15 +152,16 @@ func (e *rawServiceEntry) UnmarshalJSON(data []byte) error {
 
 // rawService mirrors Service but uses rawRouteEntry to support route includes.
 type rawService struct {
-	Listen  string          `json:"listen"`
-	TLS     bool            `json:"tls"`
-	TLSCert string          `json:"tls_cert,omitempty"`
-	TLSKey  string          `json:"tls_key,omitempty"`
-	ACME    *ACMEConfig     `json:"acme,omitempty"`
-	H2      *bool           `json:"h2,omitempty"`
-	Config  *ServerConfig   `json:"config,omitempty"`
-	Plugins []string        `json:"plugins,omitempty"`
-	Routes  []rawRouteEntry `json:"routes"`
+	Listen    string          `json:"listen"`
+	TLS       bool            `json:"tls"`
+	TLSCert   string          `json:"tls_cert,omitempty"`
+	TLSKey    string          `json:"tls_key,omitempty"`
+	StrictSNI bool            `json:"strict_sni,omitempty"`
+	ACME      *ACMEConfig     `json:"acme,omitempty"`
+	H2        *bool           `json:"h2,omitempty"`
+	Config    *ServerConfig   `json:"config,omitempty"`
+	Plugins   []string        `json:"plugins,omitempty"`
+	Routes    []rawRouteEntry `json:"routes"`
 }
 
 // rawRouteEntry holds either an inline Route object or a string path
@@ -231,15 +232,16 @@ func (lc *loadContext) loadRootFile(path string) (*Config, error) {
 				return nil, fmt.Errorf("service %q: %w", name, err)
 			}
 			cfg.Services[name] = &Service{
-				Listen:  entry.Inline.Listen,
-				TLS:     entry.Inline.TLS,
-				TLSCert: entry.Inline.TLSCert,
-				TLSKey:  entry.Inline.TLSKey,
-				ACME:    entry.Inline.ACME,
-				H2:      entry.Inline.H2,
-				Config:  entry.Inline.Config,
-				Plugins: entry.Inline.Plugins,
-				Routes:  routes,
+				Listen:    entry.Inline.Listen,
+				TLS:       entry.Inline.TLS,
+				TLSCert:   entry.Inline.TLSCert,
+				TLSKey:    entry.Inline.TLSKey,
+				StrictSNI: entry.Inline.StrictSNI,
+				ACME:      entry.Inline.ACME,
+				H2:        entry.Inline.H2,
+				Config:    entry.Inline.Config,
+				Plugins:   entry.Inline.Plugins,
+				Routes:    routes,
 			}
 			continue
 		}
@@ -335,6 +337,7 @@ type rawFragment struct {
 	TLS            bool                 `json:"tls"`
 	TLSCert        string               `json:"tls_cert,omitempty"`
 	TLSKey         string               `json:"tls_key,omitempty"`
+	StrictSNI      bool                 `json:"strict_sni,omitempty"`
 	ACME           *ACMEConfig          `json:"acme,omitempty"`
 	H2             *bool                `json:"h2,omitempty"`
 	Config         *ServerConfig        `json:"config,omitempty"`
@@ -398,15 +401,16 @@ func (lc *loadContext) loadFragment(path string, parent *Config) (*Service, erro
 	}
 
 	return &Service{
-		Listen:  frag.Listen,
-		TLS:     frag.TLS,
-		TLSCert: frag.TLSCert,
-		TLSKey:  frag.TLSKey,
-		ACME:    frag.ACME,
-		H2:      frag.H2,
-		Config:  frag.Config,
-		Plugins: frag.ServicePlugins,
-		Routes:  routes,
+		Listen:    frag.Listen,
+		TLS:       frag.TLS,
+		TLSCert:   frag.TLSCert,
+		TLSKey:    frag.TLSKey,
+		StrictSNI: frag.StrictSNI,
+		ACME:      frag.ACME,
+		H2:        frag.H2,
+		Config:    frag.Config,
+		Plugins:   frag.ServicePlugins,
+		Routes:    routes,
 	}, nil
 }
 

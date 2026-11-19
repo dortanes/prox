@@ -34,6 +34,9 @@ type Proxy struct {
 	headers  map[string]string
 	timeout  time.Duration
 	fallback http.Handler // invoked when the primary action fails
+
+	responseHeaders       map[string]string
+	removeResponseHeaders []string
 }
 
 // dynTargetKey is the context key for passing the resolved target URL
@@ -67,6 +70,9 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 		timeout: timeout,
 		stream:  act.Stream,
 		rewrite: act.Rewrite,
+
+		responseHeaders:       act.ResponseHeaders,
+		removeResponseHeaders: act.RemoveResponseHeaders,
 	}
 
 	// Dynamic mode: upstream contains template placeholders.
@@ -182,6 +188,9 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if len(p.responseHeaders) > 0 || len(p.removeResponseHeaders) > 0 {
+		w = &responseHeaderWriter{ResponseWriter: w, proxy: p}
+	}
 	if p.upstreamTpl != "" {
 		p.serveDynamic(w, r)
 		return

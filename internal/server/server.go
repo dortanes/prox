@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dortanes/prox/internal/access"
 	proxacme "github.com/dortanes/prox/internal/acme"
 	"github.com/dortanes/prox/internal/action"
 	bal "github.com/dortanes/prox/internal/balancer"
@@ -29,6 +30,7 @@ import (
 	"github.com/dortanes/prox/internal/conntrack"
 	"github.com/dortanes/prox/internal/dispatcher"
 	"github.com/dortanes/prox/internal/logger"
+	"github.com/dortanes/prox/internal/metrics"
 	"github.com/dortanes/prox/internal/plugin"
 	"github.com/dortanes/prox/internal/resource"
 	"github.com/dortanes/prox/internal/router"
@@ -40,27 +42,40 @@ const (
 	defReadTimeout  time.Duration = 0
 	defWriteTimeout time.Duration = 0
 	defIdleTimeout                = 120 * time.Second
+
+	// dispatchDrainTimeout exceeds the dispatcher's SNI peek deadline.
+	dispatchDrainTimeout = 6 * time.Second
 )
 
 // Group manages multiple HTTP servers, one per configured service.
 type Group struct {
 	servers  []*managedServer
 	handlers map[string]*swappableHandler // keyed by service name
-	plugins  *plugin.Manager              // nil when no plugins configured
+	plugins  *plugin.Manager              // nil when no plugins configured; guarded by pluginsMu
 	cfg      *config.Config               // stored for ACME domain discovery
+	built    *config.Config               // the config the listeners were built from
 	acmeMu   sync.Mutex                   // serializes ACME domain updates from reload and zone rediscovery
+	metrics  *metrics.Registry            // nil without the admin API
+
+	pluginsMu sync.Mutex
 }
 
 type managedServer struct {
 	name            string
 	server          *http.Server
-	servers         []*http.Server         // parallel HTTP servers for SO_REUSEPORT
-	dispatch        *dispatcher.Dispatcher // non-nil when service has "pass" routes
+	dispatch        *dispatcher.Dispatcher // non-nil on TLS listeners and when service has "pass" routes
+	singleListener  bool                   // the service started with "pass" routes: one dual-stack listener
+	certs           *certStore             // non-nil on TLS listeners
 	acme            *proxacme.Manager      // non-nil when ACME is configured
 	stopRediscovery context.CancelFunc     // non-nil while zone rediscovery runs; guarded by Group.acmeMu
-	rawLn           net.Listener           // raw TCP listener
-	rawLns          []net.Listener         // parallel raw TCP listeners for SO_REUSEPORT
 	maxConns        int                    // max concurrent connections (0 = unlimited)
+	inherited       []net.Listener         // sockets passed by the previous process
+	listening       chan struct{}          // closed once the listeners are open
+
+	lnMu    sync.Mutex
+	servers []*http.Server // parallel HTTP servers for SO_REUSEPORT; guarded by lnMu
+	rawLns  []net.Listener // parallel raw TCP listeners for SO_REUSEPORT; guarded by lnMu
+	baseLns []net.Listener // rawLns without the connection limiter; guarded by lnMu
 }
 
 // Build creates a server group from the loaded configuration.
@@ -74,33 +89,18 @@ func Build(cfg *config.Config, configDir string) (*Group, error) {
 	g := &Group{
 		handlers: make(map[string]*swappableHandler),
 	}
+	if cfg.Admin != nil {
+		g.metrics = metrics.New()
+	}
 
 	// Collect route balancers for plugin binding (first pass).
 	routeBalancers := make(map[string]bal.Balancer)
 	routers := make(map[string]*router.Router)
-	autostart := hasAutostartPlugins(cfg)
 
 	for name, svc := range cfg.Services {
 		rt := router.New(svc.Routes)
 		routers[name] = rt
-
-		for i, route := range svc.Routes {
-			if route.Balancer != nil && (routeHasPlugins(svc, route, cfg) || autostart) {
-				inner := rt.RouteBalancer(i)
-				if inner != nil {
-					grouped := bal.NewGrouped(string(route.Balancer.Type), inner)
-					grouped.SetFallback(route.Balancer.Fallback)
-					rt.SetRouteBalancer(i, grouped)
-					routeID := fmt.Sprintf("%s:%d", name, i)
-					routeBalancers[routeID] = grouped
-				}
-			} else if route.Balancer != nil {
-				routeID := fmt.Sprintf("%s:%d", name, i)
-				if b := rt.RouteBalancer(i); b != nil {
-					routeBalancers[routeID] = b
-				}
-			}
-		}
+		wrapRouteBalancers(name, svc, rt, cfg, routeBalancers)
 	}
 
 	// Build plugin manager before servers so handlers can reference it.
@@ -121,7 +121,7 @@ func Build(cfg *config.Config, configDir string) (*Group, error) {
 			return nil, fmt.Errorf("building actions for service %q: %w", name, err)
 		}
 
-		srv, handler, err := buildServer(name, svc, cfg, svcRegistry, rt, g.plugins, configDir, routeBalancers)
+		srv, handler, err := buildServer(name, svc, cfg, svcRegistry, rt, g.plugins, g.metrics, configDir, routeBalancers)
 		if err != nil {
 			return nil, fmt.Errorf("building service %q: %w", name, err)
 		}
@@ -130,14 +130,66 @@ func Build(cfg *config.Config, configDir string) (*Group, error) {
 	}
 
 	g.cfg = cfg
+	g.built = cfg
 
 	return g, nil
 }
 
-// Reload atomically swaps the routing logic for all services.
-// Listeners keep running — zero downtime. If the new config changes listen
-// addresses or adds/removes services, those changes require a full restart.
-func (g *Group) Reload(cfg *config.Config) error {
+// wrapRouteBalancers records each route's balancer in routeBalancers, wrapping
+// it in Grouped on plugin-managed or autostart-targeted routes.
+func wrapRouteBalancers(name string, svc *config.Service, rt *router.Router, cfg *config.Config, routeBalancers map[string]bal.Balancer) {
+	autostart := hasAutostartPlugins(cfg)
+	for i, route := range svc.Routes {
+		if route.Balancer == nil {
+			continue
+		}
+		b := rt.RouteBalancer(i)
+		if b == nil {
+			continue
+		}
+		if routeHasPlugins(svc, route, cfg) || autostart {
+			grouped := bal.NewGrouped(string(route.Balancer.Type), b)
+			grouped.SetFallback(route.Balancer.Fallback)
+			rt.SetRouteBalancer(i, grouped)
+			b = grouped
+		}
+		routeBalancers[config.RouteID(name, i, route)] = b
+	}
+}
+
+// staticUpstreams maps routes to their fixed upstream, for traffic counters.
+func staticUpstreams(name string, svc *config.Service, cfg *config.Config) map[string]string {
+	upstreams := make(map[string]string)
+	for i, route := range svc.Routes {
+		if act := resolveAction(route, cfg); act != nil && act.Upstream != "" && !strings.Contains(act.Upstream, "{") {
+			upstreams[config.RouteID(name, i, route)] = act.Upstream
+		}
+	}
+	return upstreams
+}
+
+// ReloadReport lists what a reload applied and which changed settings keep
+// their old value until the next restart.
+type ReloadReport struct {
+	Applied         []string
+	RestartRequired []string
+}
+
+// pendingService is a service rebuilt by a reload, not yet in effect.
+type pendingService struct {
+	name     string
+	svc      *config.Service
+	handler  *swappableHandler
+	ms       *managedServer
+	router   *router.Router
+	registry *action.Registry
+	certs    *certSet // nil on listeners without TLS
+}
+
+// Reload atomically swaps the routing logic and certificates of all services.
+// Listeners keep running — zero downtime. Everything is built first, so a
+// failed reload leaves the running configuration untouched.
+func (g *Group) Reload(cfg *config.Config) (*ReloadReport, error) {
 	resolver := resource.NewResolver(cfg.Resources)
 
 	hints := buildRouteHints(cfg)
@@ -145,60 +197,75 @@ func (g *Group) Reload(cfg *config.Config) error {
 	// Rebuild balancers for plugin binding.
 	routeBalancers := make(map[string]bal.Balancer)
 
-	swapped := 0
+	names := make([]string, 0, len(cfg.Services))
+	for name := range cfg.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 
-	for name, svc := range cfg.Services {
+	pending := make([]*pendingService, 0, len(names))
+	for _, name := range names {
+		svc := cfg.Services[name]
 		handler, ok := g.handlers[name]
 		if !ok {
-			slog.Warn("service added, restart required",
-				"service", name,
-			)
 			continue
 		}
 
-		rt := router.New(svc.Routes)
+		p := &pendingService{name: name, svc: svc, handler: handler, router: router.New(svc.Routes)}
 
-		svcRegistry, err := action.Build(cfg.Actions, resolver, hints, svc.Config)
+		var err error
+		p.registry, err = action.Build(cfg.Actions, resolver, hints, svc.Config)
 		if err != nil {
-			return fmt.Errorf("building actions for service %q: %w", name, err)
+			return nil, fmt.Errorf("building actions for service %q: %w", name, err)
 		}
 
-		handler.Swap(rt, svcRegistry)
+		wrapRouteBalancers(name, svc, p.router, cfg, routeBalancers)
 
-		// Dispatcher routes are swapped below, after balancer wrapping,
-		// so pass routes get the correct (plugin-managed) balancer reference.
-
-		// Wrap balancers in Grouped for plugin-managed or autostart-targeted routes.
-		for i, route := range svc.Routes {
-			if route.Balancer != nil && (routeHasPlugins(svc, route, cfg) || hasAutostartPlugins(cfg)) {
-				inner := rt.RouteBalancer(i)
-				if inner != nil {
-					grouped := bal.NewGrouped(string(route.Balancer.Type), inner)
-					grouped.SetFallback(route.Balancer.Fallback)
-					rt.SetRouteBalancer(i, grouped)
-					routeID := fmt.Sprintf("%s:%d", name, i)
-					routeBalancers[routeID] = grouped
-				}
-			} else if route.Balancer != nil {
-				routeID := fmt.Sprintf("%s:%d", name, i)
-				if b := rt.RouteBalancer(i); b != nil {
-					routeBalancers[routeID] = b
-				}
-			}
-		}
-
-		// Swap dispatcher routes now that routeBalancers has the correct entries.
 		for _, ms := range g.servers {
-			if ms.name == name && ms.dispatch != nil {
-				routes := buildDispatcherRoutes(name, svc, cfg, routeBalancers)
-				ms.dispatch.SwapRoutes(routes)
-				slog.Debug("dispatcher routes reloaded", "service", name, "routes", len(routes))
+			if ms.name == name {
+				p.ms = ms
 			}
 		}
+		if p.ms.certs != nil {
+			p.certs, err = loadCertSet(svc.TLSCert, svc.TLSKey)
+			if err != nil {
+				return nil, fmt.Errorf("loading TLS certificates for service %q: %w", name, err)
+			}
+		}
+		pending = append(pending, p)
+	}
 
-		swapped++
+	// Plugins go first so routes never run without the hooks they declare.
+	stale := g.applyPlugins(buildPluginBindings(cfg, routeBalancers), buildRouteInfo(cfg, routeBalancers))
 
-		slog.Debug("service reloaded", "service", name)
+	report := &ReloadReport{Applied: []string{}, RestartRequired: restartRequired(g.built, cfg)}
+	for _, p := range pending {
+		p.handler.Swap(p.router, p.registry, staticUpstreams(p.name, p.svc, cfg))
+		applied := "routes, actions"
+		if p.ms.dispatch != nil {
+			routes := buildDispatcherRoutes(p.name, p.svc, cfg, routeBalancers)
+			p.ms.dispatch.SwapRoutes(routes)
+			slog.Debug("dispatcher routes reloaded", "service", p.name, "routes", len(routes))
+		}
+		if p.ms.certs != nil {
+			p.ms.certs.update(p.certs, buildSNIRoutes(p.name, p.svc, cfg, routeBalancers), p.svc.StrictSNI)
+			applied += ", certificates"
+		}
+		report.Applied = append(report.Applied, fmt.Sprintf("service %q: %s", p.name, applied))
+		slog.Debug("service reloaded", "service", p.name)
+	}
+	report.Applied = append(report.Applied, "plugins")
+
+	routeIDs := make(map[string]bool)
+	for name, svc := range cfg.Services {
+		for i, route := range svc.Routes {
+			routeIDs[config.RouteID(name, i, route)] = true
+		}
+	}
+	g.metrics.Retain(routeIDs)
+
+	if stale != nil {
+		stale.Stop()
 	}
 
 	// Update ACME domain management if domains changed.
@@ -211,36 +278,57 @@ func (g *Group) Reload(cfg *config.Config) error {
 		}
 	}
 
-	// Reconfigure plugins.
-	bindings := buildPluginBindings(cfg, routeBalancers)
-	routeInfo := buildRouteInfo(cfg, routeBalancers)
-	if g.plugins != nil {
-		if len(bindings) > 0 {
-			g.plugins.Reconfigure(bindings, routeInfo)
-		} else {
-			g.plugins.Stop()
-			g.plugins = nil
-		}
-	} else if len(bindings) > 0 {
-		g.plugins = plugin.NewManager()
-		g.plugins.Configure(bindings, routeInfo)
-		_ = g.plugins.Start(context.Background())
+	for _, item := range report.RestartRequired {
+		slog.Warn("config change requires a restart", "change", item)
 	}
-
-	// Warn about removed services.
-	for name := range g.handlers {
-		if _, ok := cfg.Services[name]; !ok {
-			slog.Warn("service removed, restart required",
-				"service", name,
-			)
-		}
-	}
-
-	slog.Info("reload complete", "services_swapped", swapped)
+	slog.Info("reload complete", "services_swapped", len(pending))
 
 	g.cfg = cfg
 
+	return report, nil
+}
+
+// applyPlugins brings the plugin manager in line with bindings and hands it to
+// every handler and dispatcher. It returns a manager that is no longer in use,
+// which the caller stops once the new routes are live.
+func (g *Group) applyPlugins(bindings []*plugin.Binding, routeInfo map[string]*plugin.RouteInfo) *plugin.Manager {
+	g.pluginsMu.Lock()
+	defer g.pluginsMu.Unlock()
+
+	switch {
+	case g.plugins != nil && len(bindings) > 0:
+		g.plugins.Reconfigure(bindings, routeInfo)
+		return nil
+	case g.plugins != nil:
+		stale := g.plugins
+		g.plugins = nil
+		g.publishPlugins()
+		return stale
+	case len(bindings) > 0:
+		g.plugins = plugin.NewManager()
+		g.plugins.Configure(bindings, routeInfo)
+		if err := g.plugins.Start(context.Background()); err != nil {
+			slog.Error("plugin start failed", "err", err)
+		}
+		g.publishPlugins()
+	}
 	return nil
+}
+
+func (g *Group) publishPlugins() {
+	for _, h := range g.handlers {
+		h.plugins.Store(g.plugins)
+	}
+	for _, ms := range g.servers {
+		if ms.dispatch != nil {
+			ms.dispatch.SetPlugins(g.plugins)
+		}
+	}
+}
+
+// Metrics returns the traffic counters.
+func (g *Group) Metrics() metrics.Snapshot {
+	return g.metrics.Snapshot()
 }
 
 // RouteCount returns the total number of routes across all services.
@@ -283,10 +371,15 @@ type ServiceStatus struct {
 	Routes int    `json:"routes"`
 }
 
-// CertificateStatus returns certificate status across all ACME-enabled services.
+// CertificateStatus returns the loaded manual certificates and the ACME-managed
+// ones across all services.
 func (g *Group) CertificateStatus() []proxacme.CertStatus {
 	var all []proxacme.CertStatus
+	now := time.Now()
 	for _, ms := range g.servers {
+		if ms.certs != nil {
+			all = append(all, ms.certs.status(now)...)
+		}
 		if ms.acme != nil {
 			all = append(all, ms.acme.CertificateStatus()...)
 		}
@@ -375,8 +468,8 @@ func (g *Group) BalancerInfo() []BalancerStatus {
 	return result
 }
 
-func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry, rt *router.Router, plugins *plugin.Manager, configDir string, routeBalancers map[string]bal.Balancer) (*managedServer, *swappableHandler, error) {
-	handler := newSwappableHandler(name, rt, registry, plugins)
+func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry, rt *router.Router, plugins *plugin.Manager, reg *metrics.Registry, configDir string, routeBalancers map[string]bal.Balancer) (*managedServer, *swappableHandler, error) {
+	handler := newSwappableHandler(name, rt, registry, plugins, reg, staticUpstreams(name, svc, cfg))
 
 	// Resolve per-service timeouts, falling back to defaults.
 	readTimeout := defReadTimeout
@@ -404,8 +497,9 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 	}
 
 	ms := &managedServer{
-		name:   name,
-		server: srv,
+		name:      name,
+		server:    srv,
+		listening: make(chan struct{}),
 	}
 
 	if svc.TLS {
@@ -417,18 +511,17 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 			},
 		}
 
-		// Load manual certificates if configured.
-		if svc.TLSCert != "" {
-			certs, err := loadCertificates(svc.TLSCert, svc.TLSKey)
-			if err != nil {
-				return nil, nil, fmt.Errorf("loading TLS certificates: %w", err)
-			}
-			tlsCfg.Certificates = certs
-			slog.Debug("loaded TLS certificates",
-				"service", name,
-				"count", len(certs),
-			)
+		certs, err := loadCertSet(svc.TLSCert, svc.TLSKey)
+		if err != nil {
+			return nil, nil, fmt.Errorf("loading TLS certificates: %w", err)
 		}
+		slog.Debug("loaded TLS certificates",
+			"service", name,
+			"count", len(certs.certs),
+		)
+		ms.certs = &certStore{}
+		ms.certs.update(certs, buildSNIRoutes(name, svc, cfg, routeBalancers), svc.StrictSNI)
+		tlsCfg.GetCertificate = ms.certs.getCertificate
 
 		// Wire up ACME if configured.
 		if svc.ACME != nil {
@@ -437,10 +530,7 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 				return nil, nil, fmt.Errorf("initializing ACME: %w", err)
 			}
 
-			// Go's tls.Config checks Certificates first (by SNI), then calls
-			// GetCertificate for any unmatched domains. This gives us
-			// manual-first-then-ACME fallback for free.
-			tlsCfg.GetCertificate = acmeMgr.GetCertificate
+			ms.certs.acme = acmeMgr.GetCertificate
 			ms.acme = acmeMgr
 
 			slog.Debug("ACME enabled", "service", name)
@@ -461,10 +551,12 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 		}
 	}
 
-	// Check if this service has any "pass" routes — if so, build a dispatcher.
+	// TLS listeners always get a dispatcher so "pass" routes can arrive by reload.
 	dispatchRoutes := buildDispatcherRoutes(name, svc, cfg, routeBalancers)
-	if len(dispatchRoutes) > 0 {
+	if svc.TLS || len(dispatchRoutes) > 0 {
 		ms.dispatch = dispatcher.New(dispatchRoutes, plugins)
+		ms.dispatch.SetMetrics(reg)
+		ms.singleListener = len(dispatchRoutes) > 0
 
 		passCount := 0
 		for _, r := range dispatchRoutes {
@@ -501,20 +593,29 @@ func buildDispatcherRoutes(serviceName string, svc *config.Service, cfg *config.
 	if !hasPass {
 		return nil
 	}
+	return buildSNIRoutes(serviceName, svc, cfg, routeBalancers)
+}
 
-	// Build all routes (not just pass/drop routes) — order matters for correct dispatching.
+// buildSNIRoutes compiles every route with a domain pattern, in config order.
+func buildSNIRoutes(serviceName string, svc *config.Service, cfg *config.Config, routeBalancers map[string]bal.Balancer) []*dispatcher.Route {
+	// All routes (not just pass/drop routes) — order matters for correct dispatching.
 	routes := make([]*dispatcher.Route, 0, len(svc.Routes))
 	for i, route := range svc.Routes {
 		if route.Match == nil || route.Match.Domain == "" {
 			continue // L4 dispatcher can only match on domain (SNI)
 		}
 
-		routeID := fmt.Sprintf("%s:%d", serviceName, i)
+		routeID := config.RouteID(serviceName, i, route)
 
 		dr := &dispatcher.Route{
 			RouteID:        routeID,
 			Domain:         route.Match.Domain,
 			DomainSegments: strings.Split(strings.ToLower(route.Match.Domain), "."),
+			WholeDomain:    route.Match.Path == "" && len(route.Match.Methods) == 0,
+			ByClient:       route.Balancer != nil && route.Balancer.Type == config.BalancerIPHash,
+		}
+		if route.Access != nil {
+			dr.Access = access.Compile(route.Access.Allow, route.Access.Deny)
 		}
 
 		// Detect trailing "**" glob.
@@ -527,6 +628,12 @@ func buildDispatcherRoutes(serviceName string, svc *config.Service, cfg *config.
 			switch act.Type {
 			case config.ActionTypePass:
 				dr.IsPass = true
+				switch act.ProxyProtocol {
+				case "v1":
+					dr.ProxyProtocol = 1
+				case "v2":
+					dr.ProxyProtocol = 2
+				}
 				if route.Balancer != nil && strings.Contains(act.Upstream, "{target}") {
 					dr.UpstreamTpl = act.Upstream
 					// Use the shared balancer from routeBalancers so plugin
@@ -566,85 +673,16 @@ func resolveActionType(route *config.Route, cfg *config.Config) config.ActionTyp
 	return ""
 }
 
-// loadCertificates loads TLS certificate+key pairs.
-// If certPath is a directory, all .crt/.pem + matching .key pairs are loaded.
-// If certPath is a file, a single pair is loaded using certPath and keyPath.
-func loadCertificates(certPath, keyPath string) ([]tls.Certificate, error) {
-	info, err := os.Stat(certPath)
-	if err != nil {
-		return nil, fmt.Errorf("stat %q: %w", certPath, err)
-	}
-
-	if !info.IsDir() {
-		// Single file mode — classic tls_cert + tls_key.
-		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-		if err != nil {
-			return nil, fmt.Errorf("loading keypair (%s, %s): %w", certPath, keyPath, err)
-		}
-		return []tls.Certificate{cert}, nil
-	}
-
-	// Directory mode — scan for all cert+key pairs.
-	return loadCertificatesFromDir(certPath)
-}
-
-// loadCertificatesFromDir scans a directory for certificate+key pairs.
-// Matches by basename: "example.com.crt" pairs with "example.com.key".
-// Supported extensions: .crt, .pem (cert) and .key (key).
-func loadCertificatesFromDir(dir string) ([]tls.Certificate, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("reading cert directory %q: %w", dir, err)
-	}
-
-	// Collect all cert files.
-	certFiles := make(map[string]string) // basename (no ext) → full path
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		ext := strings.ToLower(filepath.Ext(e.Name()))
-		if ext == ".crt" || ext == ".pem" {
-			base := strings.TrimSuffix(e.Name(), ext)
-			certFiles[base] = filepath.Join(dir, e.Name())
-		}
-	}
-
-	if len(certFiles) == 0 {
-		return nil, fmt.Errorf("no certificate files (.crt, .pem) found in %q", dir)
-	}
-
-	// Match each cert with its key.
-	var certs []tls.Certificate
-	for base, certFile := range certFiles {
-		keyFile := filepath.Join(dir, base+".key")
-		if _, err := os.Stat(keyFile); err != nil {
-			return nil, fmt.Errorf("no matching key file for %q (expected %s)", certFile, keyFile)
-		}
-
-		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-		if err != nil {
-			return nil, fmt.Errorf("loading keypair (%s, %s): %w", certFile, keyFile, err)
-		}
-
-		slog.Debug("loaded certificate pair",
-			"cert", certFile,
-			"key", keyFile,
-		)
-		certs = append(certs, cert)
-	}
-
-	return certs, nil
-}
-
 // ListenAndServe starts all servers and blocks until ctx is cancelled.
 func (g *Group) ListenAndServe(ctx context.Context) error {
 	// Start plugin processes.
+	g.pluginsMu.Lock()
 	if g.plugins != nil {
 		if err := g.plugins.Start(ctx); err != nil {
 			slog.Error("plugin start failed", "err", err)
 		}
 	}
+	g.pluginsMu.Unlock()
 
 	// Start ACME certificate management.
 	g.startACME(ctx, g.cfg)
@@ -653,12 +691,7 @@ func (g *Group) ListenAndServe(ctx context.Context) error {
 
 	for _, ms := range g.servers {
 		go func(ms *managedServer) {
-			var err error
-			if ms.dispatch != nil {
-				err = ms.serveWithDispatcher()
-			} else {
-				err = ms.serveDirect()
-			}
+			err := ms.serveDirect()
 			if err != nil && err != http.ErrServerClosed {
 				errCh <- fmt.Errorf("service %q: %w", ms.name, err)
 			}
@@ -936,30 +969,41 @@ func (ms *managedServer) serveDirect() error {
 			}
 		}
 	}
-	if isTest {
+	if isTest || ms.singleListener {
 		numWorkers = 1
+	}
+	if n := len(ms.inherited); n > 0 {
+		numWorkers = n
 	}
 
 	// Determine network: force tcp4 for IPv4 addresses to bypass Go's dual-stack resolving overhead.
 	network := "tcp"
-	if !strings.Contains(ms.server.Addr, "[") && !strings.Contains(ms.server.Addr, "::") {
+	if !ms.singleListener && !strings.Contains(ms.server.Addr, "[") && !strings.Contains(ms.server.Addr, "::") {
 		network = "tcp4"
 	}
 
-	ms.rawLns = make([]net.Listener, numWorkers)
+	rawLns := make([]net.Listener, numWorkers)
+	baseLns := make([]net.Listener, numWorkers)
 	for i := 0; i < numWorkers; i++ {
-		ln, err := reusePortListen(network, ms.server.Addr)
+		var ln net.Listener
+		var err error
+		if i < len(ms.inherited) {
+			ln = ms.inherited[i]
+		} else {
+			ln, err = reusePortListen(network, ms.server.Addr)
+		}
 		if err != nil {
 			// Clean up any successfully opened listeners on error
 			for j := 0; j < i; j++ {
-				ms.rawLns[j].Close()
+				rawLns[j].Close()
 			}
 			return fmt.Errorf("listen SO_REUSEPORT %s (worker %d): %w", ms.server.Addr, i, err)
 		}
+		baseLns[i] = ln
 		if ms.maxConns > 0 {
 			ln = newLimitListener(ln, ms.maxConns)
 		}
-		ms.rawLns[i] = ln
+		rawLns[i] = ln
 	}
 
 	slog.Info("starting server",
@@ -973,11 +1017,10 @@ func (ms *managedServer) serveDirect() error {
 		"max_conns", ms.maxConns,
 	)
 
-	ms.servers = make([]*http.Server, numWorkers)
-	errCh := make(chan error, numWorkers)
-	for i := 0; i < numWorkers; i++ {
+	servers := make([]*http.Server, numWorkers)
+	for i := range servers {
 		// Create a separate http.Server for each listener to avoid internal race/deadlock in net/http
-		srv := &http.Server{
+		servers[i] = &http.Server{
 			Addr:         ms.server.Addr,
 			Handler:      ms.server.Handler,
 			ReadTimeout:  ms.server.ReadTimeout,
@@ -988,7 +1031,22 @@ func (ms *managedServer) serveDirect() error {
 			ConnContext:  ms.server.ConnContext,
 			ErrorLog:     ms.server.ErrorLog,
 		}
-		ms.servers[i] = srv
+	}
+
+	ms.lnMu.Lock()
+	ms.rawLns = rawLns
+	ms.baseLns = baseLns
+	ms.servers = servers
+	ms.lnMu.Unlock()
+	close(ms.listening)
+
+	errCh := make(chan error, numWorkers)
+	for i, srv := range servers {
+		// The dispatcher owns the raw listener and feeds the HTTP server.
+		httpLn := rawLns[i]
+		if ms.dispatch != nil {
+			httpLn = ms.dispatch.Serve(httpLn)
+		}
 
 		go func(s *http.Server, ln net.Listener) {
 			var err error
@@ -1002,7 +1060,7 @@ func (ms *managedServer) serveDirect() error {
 			} else {
 				errCh <- nil
 			}
-		}(srv, ms.rawLns[i])
+		}(srv, httpLn)
 	}
 
 	// Block until all workers finish, or return the first critical error.
@@ -1016,43 +1074,14 @@ func (ms *managedServer) serveDirect() error {
 	return firstErr
 }
 
-// serveWithDispatcher starts a raw TCP listener, runs the L4 dispatcher,
-// and feeds non-pass connections to the HTTP server via a synthetic listener.
-func (ms *managedServer) serveWithDispatcher() error {
-	ln, err := net.Listen("tcp", ms.server.Addr)
-	if err != nil {
-		return fmt.Errorf("listen %s: %w", ms.server.Addr, err)
-	}
-	if ms.maxConns > 0 {
-		ln = newLimitListener(ln, ms.maxConns)
-	}
-	ms.rawLn = ln // store for shutdown
-
-	slog.Info("starting server",
-		"service", ms.name,
-		"addr", ms.server.Addr,
-		"tls", ms.server.TLSConfig != nil,
-		"l4", true,
-	)
-
-	// The dispatcher accepts raw TCP, handles pass routes inline,
-	// and returns a synthetic listener for non-pass connections.
-	httpLn := ms.dispatch.Serve(ln)
-
-	if ms.server.TLSConfig != nil {
-		// ServeTLS wraps accepted connections with tls.Server —
-		// the prefixConn replays the peeked ClientHello bytes.
-		return ms.server.ServeTLS(httpLn, "", "")
-	}
-	return ms.server.Serve(httpLn)
-}
-
 // shutdown gracefully stops all servers with a timeout.
 func (g *Group) shutdown() {
 	// Stop plugin processes first.
+	g.pluginsMu.Lock()
 	if g.plugins != nil {
 		g.plugins.Stop()
 	}
+	g.pluginsMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
@@ -1064,15 +1093,22 @@ func (g *Group) shutdown() {
 		go func(ms *managedServer) {
 			defer wg.Done()
 
-			// Close the raw TCP listener first — this unblocks the
+			ms.lnMu.Lock()
+			rawLns, servers := ms.rawLns, ms.servers
+			ms.lnMu.Unlock()
+
+			// Close the raw TCP listeners first — this unblocks the
 			// dispatcher's acceptLoop so it can drain and exit.
-			if ms.rawLn != nil {
-				ms.rawLn.Close()
+			for _, ln := range rawLns {
+				ln.Close()
+			}
+			if ms.dispatch != nil {
+				ms.dispatch.Drain(dispatchDrainTimeout)
 			}
 
-			if len(ms.servers) > 0 {
+			if len(servers) > 0 {
 				var swg sync.WaitGroup
-				for _, srv := range ms.servers {
+				for _, srv := range servers {
 					swg.Add(1)
 					go func(s *http.Server) {
 						defer swg.Done()
@@ -1122,8 +1158,9 @@ func (g *Group) shutdown() {
 
 // routingSnapshot is an immutable pair of router + action registry, swapped atomically.
 type routingSnapshot struct {
-	router   *router.Router
-	registry *action.Registry
+	router    *router.Router
+	registry  *action.Registry
+	upstreams map[string]string // route ID → fixed upstream
 }
 
 // throttleBufPool reuses 32KB byte slices for throttled ReadFrom copies.
@@ -1179,24 +1216,22 @@ func withConnTLS(r *http.Request) *http.Request {
 
 // swappableHandler wraps an atomic pointer to a routingSnapshot.
 type swappableHandler struct {
-	name         string
-	current      atomic.Pointer[routingSnapshot]
-	plugins      *plugin.Manager         // nil when no plugins configured
-	groupBuckets *throttle.GroupRegistry // shared group speed buckets
+	name    string
+	current atomic.Pointer[routingSnapshot]
+	plugins atomic.Pointer[plugin.Manager] // nil when no plugins configured
+	metrics *metrics.Registry              // nil when traffic is not counted
 }
 
-func newSwappableHandler(name string, rt *router.Router, registry *action.Registry, plugins *plugin.Manager) *swappableHandler {
-	h := &swappableHandler{name: name, plugins: plugins}
-	if plugins != nil {
-		h.groupBuckets = plugins.GroupBuckets()
-	}
-	h.current.Store(&routingSnapshot{router: rt, registry: registry})
+func newSwappableHandler(name string, rt *router.Router, registry *action.Registry, plugins *plugin.Manager, reg *metrics.Registry, upstreams map[string]string) *swappableHandler {
+	h := &swappableHandler{name: name, metrics: reg}
+	h.plugins.Store(plugins)
+	h.Swap(rt, registry, upstreams)
 	return h
 }
 
 // Swap atomically replaces the routing logic.
-func (h *swappableHandler) Swap(rt *router.Router, registry *action.Registry) {
-	h.current.Store(&routingSnapshot{router: rt, registry: registry})
+func (h *swappableHandler) Swap(rt *router.Router, registry *action.Registry, upstreams map[string]string) {
+	h.current.Store(&routingSnapshot{router: rt, registry: registry, upstreams: upstreams})
 }
 
 func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1205,7 +1240,7 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var start time.Time
 	var capture *logger.ResponseCapture
 	accessOn := logger.AccessEnabled()
-	if accessOn {
+	if accessOn || h.metrics != nil {
 		start = time.Now()
 		capture = acquireCapture(w)
 		w = capture
@@ -1213,9 +1248,9 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Access log — runs after recovery. Skipped for dropped connections.
 	dropped := false
-	if accessOn {
+	if capture != nil {
 		defer func() {
-			if dropped {
+			if dropped || !accessOn {
 				releaseCapture(capture)
 				return
 			}
@@ -1257,11 +1292,12 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	snap := h.current.Load()
+	plugins := h.plugins.Load()
 
 	// Fast path: skip MatchResult allocation when nobody needs it.
 	// Speed-limited routes need MatchResult for bucket access.
 	var actionName string
-	needMatch := h.plugins != nil || accessOn || snap.router.HasSpeed()
+	needMatch := plugins != nil || accessOn || h.metrics != nil || snap.router.HasSpeed() || snap.router.HasAccess()
 	if !needMatch {
 		actionName = snap.router.MatchAction(r)
 	} else {
@@ -1272,18 +1308,39 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var track *metrics.Track
+	var traffic *conntrack.Counter
+	finished := false
+	if needMatch {
+		mr := router.GetMatchResult(r)
+		if mr.Denied {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		if track = h.metrics.Begin(mr.RouteID(h.name)); track != nil {
+			traffic = &conntrack.Counter{}
+			r.Body = traffic.RxBody(r.Body)
+			w = &countingResponseWriter{ResponseWriter: w, counter: traffic}
+			// Runs before a panic reaches the recovery above; an aborted
+			// handler never sets finished and counts as an error.
+			defer func() {
+				track.End(traffic.Rx(), traffic.Tx(), !finished || capture.Status() >= http.StatusInternalServerError)
+			}()
+		}
+	}
+
 	// Plugin on_request gate.
 	var reqInfo *plugin.RequestInfo
 	var pluginSpeedLimit *plugin.SpeedLimit
 	var session string
 	useFallback := false
-	if h.plugins != nil {
+	if plugins != nil {
 		mr := router.GetMatchResult(r)
 		routeID := mr.RouteID(h.name)
 		reqInfo = buildRequestInfo(r, mr, routeID)
 
-		if h.plugins.HasHook(routeID, plugin.HookOnRequest) {
-			res, err := h.plugins.OnRequest(r.Context(), routeID, reqInfo)
+		if plugins.HasHook(routeID, plugin.HookOnRequest) {
+			res, err := plugins.OnRequest(r.Context(), routeID, reqInfo)
 			if err != nil {
 				slog.Error("plugin request hook failed",
 					"service", h.name,
@@ -1357,10 +1414,10 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Wrap response writer for on_response hook.
-		if h.plugins.HasHook(routeID, plugin.HookOnResponse) {
+		if plugins.HasHook(routeID, plugin.HookOnResponse) {
 			w = &hookResponseWriter{
 				ResponseWriter: w,
-				plugins:        h.plugins,
+				plugins:        plugins,
 				routeID:        routeID,
 				reqInfo:        reqInfo,
 				ctx:            r.Context(),
@@ -1369,10 +1426,10 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Byte counting and session tracking; zero cost when not subscribed.
-	if h.plugins != nil {
+	if plugins != nil {
 		if mr := router.GetMatchResult(r); mr != nil {
 			var finish func()
-			w, r, finish = h.trackStream(w, r, mr.RouteID(h.name), mr.Target, session, start)
+			w, r, finish = trackStream(plugins, w, r, mr.RouteID(h.name), mr.Target, session, start)
 			if finish != nil {
 				defer finish()
 			}
@@ -1382,7 +1439,7 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Apply speed limiting.
 	if mr := router.GetMatchResult(r); mr != nil {
 		var cleanup func()
-		w, r, cleanup = h.applySpeedLimit(w, r, mr, pluginSpeedLimit)
+		w, r, cleanup = h.applySpeedLimit(plugins, w, r, mr, pluginSpeedLimit)
 		if cleanup != nil {
 			defer cleanup()
 		}
@@ -1411,7 +1468,17 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if track != nil {
+		routeID := router.GetMatchResult(r).RouteID(h.name)
+		upstream := router.GetMatchResult(r).Target
+		if upstream == "" {
+			upstream = snap.upstreams[routeID]
+		}
+		track.SetUpstream(upstream)
+	}
+
 	handler.ServeHTTP(w, r)
+	finished = true
 }
 
 // errSessionDropped cancels a stream whose session a plugin dropped.
@@ -1421,9 +1488,9 @@ var errSessionDropped = errors.New("session dropped by plugin")
 // subscriber needs them, and registers streams carrying a session key so a
 // plugin can drop them. The returned finish must run when the handler returns,
 // panics included; it aborts the client stream when the session was dropped.
-func (h *swappableHandler) trackStream(w http.ResponseWriter, r *http.Request, routeID, target, session string, start time.Time) (http.ResponseWriter, *http.Request, func()) {
-	hasDisconnect := h.plugins.HasHook(routeID, plugin.HookOnDisconnect)
-	metered := session != "" && h.plugins.HasHook(routeID, plugin.HookOnUsage)
+func trackStream(plugins *plugin.Manager, w http.ResponseWriter, r *http.Request, routeID, target, session string, start time.Time) (http.ResponseWriter, *http.Request, func()) {
+	hasDisconnect := plugins.HasHook(routeID, plugin.HookOnDisconnect)
+	metered := session != "" && plugins.HasHook(routeID, plugin.HookOnUsage)
 	if !hasDisconnect && session == "" {
 		return w, r, nil
 	}
@@ -1444,16 +1511,16 @@ func (h *swappableHandler) trackStream(w http.ResponseWriter, r *http.Request, r
 		var cancel context.CancelCauseFunc
 		ctx, cancel = context.WithCancelCause(ctx)
 		r = r.WithContext(ctx)
-		tracked = h.plugins.Sessions().Open(routeID, session, counter, func() { cancel(errSessionDropped) })
+		tracked = plugins.Sessions().Open(routeID, session, counter, func() { cancel(errSessionDropped) })
 	}
 
 	remoteAddr := r.RemoteAddr
 	finish := func() {
 		if tracked != nil {
-			h.plugins.Sessions().Close(tracked)
+			plugins.Sessions().Close(tracked)
 		}
 		if hasDisconnect {
-			h.plugins.OnDisconnect(routeID, &plugin.DisconnectInfo{
+			plugins.OnDisconnect(routeID, &plugin.DisconnectInfo{
 				RouteID:    routeID,
 				Target:     target,
 				RemoteAddr: remoteAddr,
@@ -1637,7 +1704,7 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 				continue
 			}
 
-			routeID := fmt.Sprintf("%s:%d", name, i)
+			routeID := config.RouteID(name, i, route)
 			b := balancers[routeID]
 
 			var match *plugin.MatchInfo
@@ -1652,8 +1719,10 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 				pluginPath := pluginRef
 				pluginName := pluginRef
 				var usageInterval time.Duration
+				var pluginArgs []string
 				if p, ok := cfg.Plugins[pluginRef]; ok {
 					pluginPath = p.Path
+					pluginArgs = p.Args
 					usageInterval = p.UsageInterval.Duration
 				} else {
 					pluginName = strings.TrimSuffix(filepath.Base(pluginRef), ".go")
@@ -1675,6 +1744,7 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 					Name:          pluginName,
 					RouteID:       routeID,
 					Plugin:        absPath,
+					Args:          pluginArgs,
 					Match:         match,
 					Balancer:      b,
 					Timeout:       route.PluginTimeout.Duration,
@@ -1707,6 +1777,7 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 		bindings = append(bindings, &plugin.Binding{
 			Name:   name,
 			Plugin: absPath,
+			Args:   p.Args,
 		})
 	}
 
@@ -1776,7 +1847,7 @@ func buildRouteInfo(cfg *config.Config, balancers map[string]bal.Balancer) map[s
 
 	for name, svc := range cfg.Services {
 		for i, route := range svc.Routes {
-			routeID := fmt.Sprintf("%s:%d", name, i)
+			routeID := config.RouteID(name, i, route)
 			b, ok := balancers[routeID]
 			if !ok {
 				continue
@@ -1845,6 +1916,7 @@ func (c *limitConn) Close() error {
 // be called when the connection ends (releases shared group buckets).
 // No-op when no speed limits apply.
 func (h *swappableHandler) applySpeedLimit(
+	plugins *plugin.Manager,
 	w http.ResponseWriter,
 	r *http.Request,
 	mr *router.MatchResult,
@@ -1867,9 +1939,9 @@ func (h *swappableHandler) applySpeedLimit(
 	perConnDown := mr.DownloadBps
 	perConnUp := mr.UploadBps
 
-	if h.plugins != nil {
+	if plugins != nil {
 		routeID := mr.RouteID(h.name)
-		sl := h.plugins.GetSpeedLimit(routeID)
+		sl := plugins.GetSpeedLimit(routeID)
 		if sl.DownloadBps > 0 {
 			perConnDown = minPositive(perConnDown, sl.DownloadBps)
 		}
@@ -1893,16 +1965,17 @@ func (h *swappableHandler) applySpeedLimit(
 		groupKey = pluginSpeed.GroupKey
 	}
 
-	if groupKey != "" && h.groupBuckets != nil {
+	if groupKey != "" && plugins != nil {
 		// Group mode: shared buckets across all connections with the same key.
-		dl, ul := h.groupBuckets.Acquire(groupKey, perConnDown, perConnUp)
+		groupBuckets := plugins.GroupBuckets()
+		dl, ul := groupBuckets.Acquire(groupKey, perConnDown, perConnUp)
 		if dl != nil {
 			downBuckets = append(downBuckets, dl)
 		}
 		if ul != nil {
 			upBuckets = append(upBuckets, ul)
 		}
-		cleanup = func() { h.groupBuckets.Release(groupKey) }
+		cleanup = func() { groupBuckets.Release(groupKey) }
 	} else {
 		// Per-connection mode: independent bucket per connection.
 		if perConnDown > 0 {

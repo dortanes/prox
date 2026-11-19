@@ -153,6 +153,12 @@ func runServe(args []string) int {
 		return 1
 	}
 
+	inherited := server.Inherited()
+	if err := group.AdoptListeners(); err != nil {
+		slog.Error("adopting listeners failed", "err", err)
+		return 1
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(),
 		syscall.SIGINT,
 		syscall.SIGTERM,
@@ -205,11 +211,51 @@ func runServe(args []string) int {
 		}
 	}()
 
+	go func() {
+		select {
+		case <-group.Ready():
+			if err := server.SignalReady(); err != nil {
+				slog.Error("signalling readiness failed", "err", err)
+			}
+		case <-ctx.Done():
+		}
+	}()
+
+	stopAdmin := func() {}
+
+	if len(restartSignals) > 0 {
+		restartCh := make(chan os.Signal, 1)
+		signal.Notify(restartCh, restartSignals...)
+		go func() {
+			for range restartCh {
+				slog.Info("restart requested")
+				reloadMu.Lock()
+				err := group.Handover()
+				reloadMu.Unlock()
+				if err != nil {
+					slog.Error("restart failed, continuing to serve", "err", err)
+					continue
+				}
+				slog.Info("new process ready, draining connections")
+				stopAdmin()
+				stop()
+				return
+			}
+		}()
+	}
+
 	// Start admin API if configured (zero-overhead when absent).
 	if cfg.Admin != nil {
+		var listenRetry time.Duration
+		if inherited {
+			// The previous process holds the address until it hands over.
+			listenRetry = adminHandoverRetry
+		}
 		adminSrv := admin.New(cfg.Admin, admin.Deps{
-			StartTime: startTime,
-			Version:   version,
+			StartTime:   startTime,
+			Version:     version,
+			ListenRetry: listenRetry,
+			Metrics:     group.Metrics,
 			GetConfig: func() *config.Config {
 				return group.CurrentConfig()
 			},
@@ -237,6 +283,7 @@ func runServe(args []string) int {
 					entries[i] = admin.CertEntry{
 						Domain: c.Domain, Status: c.Status,
 						Expires: c.Expires, Issuer: c.Issuer,
+						Names: c.Names, Serial: c.Serial, Source: c.Source,
 					}
 				}
 				return entries
@@ -268,11 +315,12 @@ func runServe(args []string) int {
 			}
 		}()
 
-		defer func() {
+		stopAdmin = func() {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = adminSrv.Shutdown(shutdownCtx)
-		}()
+		}
+		defer stopAdmin()
 	}
 
 	if err := group.ListenAndServe(ctx); err != nil {
@@ -283,6 +331,9 @@ func runServe(args []string) int {
 	slog.Info("prox stopped")
 	return 0
 }
+
+// adminHandoverRetry is how long a restarted process waits for the admin address.
+const adminHandoverRetry = 30 * time.Second
 
 func triggerReload(ch chan struct{}) {
 	select {
@@ -314,7 +365,7 @@ func performReload(mu *sync.Mutex, path string, group *server.Group) {
 		return
 	}
 
-	if err := group.Reload(result.Config); err != nil {
+	if _, err := group.Reload(result.Config); err != nil {
 		slog.Error("reload failed",
 			"err", err,
 		)
@@ -330,17 +381,22 @@ func performReloadSync(mu *sync.Mutex, path string, group *server.Group) *admin.
 
 	slog.Info("reloading config (admin API)", "path", path)
 
+	failed := func(err error) *admin.ReloadResult {
+		return &admin.ReloadResult{Error: err.Error(), Applied: []string{}, RestartRequired: []string{}}
+	}
+
 	result, err := config.LoadFile(path)
 	if err != nil {
-		return &admin.ReloadResult{OK: false, Error: err.Error()}
+		return failed(err)
 	}
 
 	if err := setupAccessLogging(result.Config); err != nil {
-		return &admin.ReloadResult{OK: false, Error: err.Error()}
+		return failed(err)
 	}
 
-	if err := group.Reload(result.Config); err != nil {
-		return &admin.ReloadResult{OK: false, Error: err.Error()}
+	report, err := group.Reload(result.Config)
+	if err != nil {
+		return failed(err)
 	}
 
 	routeCount := 0
@@ -352,6 +408,9 @@ func performReloadSync(mu *sync.Mutex, path string, group *server.Group) *admin.
 		OK:       true,
 		Routes:   routeCount,
 		Services: len(result.Config.Services),
+
+		Applied:         report.Applied,
+		RestartRequired: report.RestartRequired,
 	}
 }
 
@@ -371,7 +430,7 @@ func setupAccessLogging(cfg *config.Config) error {
 				path = resolveActionAccessLog(route, cfg)
 			}
 			if path != "" {
-				routePaths[fmt.Sprintf("%s:%d", name, i)] = path
+				routePaths[config.RouteID(name, i, route)] = path
 			}
 		}
 	}

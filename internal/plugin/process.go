@@ -28,13 +28,13 @@ type Process struct {
 // startProcess spawns the plugin binary and wires up stdin/stdout.
 // The path must point to a pre-compiled binary, or a source path whose
 // binary has been compiled via 'prox build'.
-func startProcess(name, path string) (*Process, error) {
+func startProcess(name, path string, args []string) (*Process, error) {
 	binPath, err := resolvePluginBinary(path)
 	if err != nil {
 		return nil, err
 	}
 
-	cmd := exec.Command(binPath)
+	cmd := exec.Command(binPath, args...)
 
 	// Isolate plugin process group so terminal signals don't kill it.
 	setProcessGroup(cmd)
