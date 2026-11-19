@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/dortanes/prox/compare/v1.3.0...v1.4.0) (2026-11-19)
+
+
+### Features
+
+* **server:** ✨ add live TLS, access rules and metrics ([b6e2955](https://github.com/dortanes/prox/commit/b6e29558241067fa472d99ed9b5ff79465efa30a))
+
 ## [1.3.0](https://github.com/dortanes/prox/compare/v1.2.1...v1.3.0) (2026-10-31)
 
 
