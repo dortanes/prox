@@ -28,7 +28,7 @@ docker run -v ./config.json5:/etc/prox/config.json5 -p 8080:8080 ghcr.io/dortane
 
 ## Hot Reload
 
-Configuration changes are detected automatically via file watcher. Manual reload is also supported via `SIGHUP`. Both L4 and L7 routes are swapped atomically — in-flight connections complete with the previous configuration, new connections use the updated one. Invalid configurations are rejected and the error is logged; the last valid configuration remains active.
+Configuration changes are detected automatically via file watcher. Manual reload is also supported via `SIGHUP`. Both L4 and L7 routes are swapped atomically — in-flight connections complete with the previous configuration, new connections use the updated one. Invalid configurations are rejected and the error is logged; the last valid configuration remains active. A reload also re-reads TLS certificates and starts or stops plugins. Settings tied to a running listener need a restart: they are logged as warnings and listed by [`POST /api/reload`](admin-api.md#post-apireload).
 
 All loaded files are watched. Editing a nested service fragment or route include triggers a full reload.
 
@@ -37,9 +37,15 @@ prox serve -config config.json5            # watcher enabled by default
 prox serve -config config.json5 -watch=false
 ```
 
+## Restart Without Dropping Traffic
+
+Send `SIGUSR2` to replace the process, for example after installing a new binary. The new process starts from the same command line on the same listening sockets, and the old one finishes its connections for up to 15 seconds and exits. If the new process fails to start, the old one keeps serving. This also applies settings that a reload cannot.
+
+The new process gets a new PID and is a child of the old one, so a supervisor must not treat the old PID's exit as a failure. Inside a container the old process is PID 1 and its exit stops the container; use a rolling replacement there. `SIGUSR2` is not available on Windows.
+
 ## L4 Dispatching
 
-When a service contains any `pass` routes, prox activates an L4 dispatcher on that listener. The dispatcher intercepts raw TCP connections **before** TLS termination:
+When a TLS service contains any `pass` routes, prox activates an L4 dispatcher on that listener. Adding the first `pass` route or removing the last one takes effect on reload. The dispatcher intercepts raw TCP connections **before** TLS termination:
 
 ```
 Client → :443 TCP
@@ -48,11 +54,11 @@ Client → :443 TCP
     → First match is "pass" → raw TCP relay to upstream
     → First match is "drop" → close connection (when dispatcher is active)
     → First match is L7     → TLS termination → HTTP routing
-    → No match              → TLS termination → HTTP 404
+    → No match              → TLS termination → HTTP 404, or a failed handshake with strict_sni and no certificate
 ```
 
 !!! note
-Without the dispatcher, `drop` routes operate at L7 — the connection hangs until timeout. When the dispatcher is active (due to `pass` routes), `drop` routes with domain patterns also participate in L4 matching, closing connections before the TLS handshake.
+    Without `pass` routes, a `drop` route with a domain and no path or method condition fails the TLS handshake for that name, and other `drop` routes close the connection at L7. When the dispatcher is active, `drop` routes with domain patterns close connections before the TLS handshake.
 
 **Route order matters.** The dispatcher evaluates all routes — not just `pass` routes — in configuration order. The first domain match wins.
 

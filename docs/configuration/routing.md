@@ -24,6 +24,26 @@ At least one of `domain` or `path` must be specified. Omit `match` entirely for 
 { action: { type: "drop" } }
 ```
 
+## Route IDs
+
+Plugins, access logs, and the admin API identify a route as `service:index`, which changes when routes are reordered. Set `id` to get a stable `service:id` instead. An id is unique within its service, is not a number, and contains only letters, digits, `.`, `_`, and `-`.
+
+```json5
+{ id: "api", match: { path: "/api/*" }, action: "backend" } // web:api
+```
+
+## Access Rules
+
+`access` restricts a route by the address of the connecting client, on HTTP and `pass` routes. Entries are IP addresses or CIDR ranges. `deny` wins; a non-empty `allow` admits only its entries. Refused HTTP requests get `403`, and refused `pass` connections are closed. `X-Forwarded-For` is not consulted.
+
+```json5
+{
+  match: { path: "/admin/*" },
+  access: { allow: ["10.0.0.0/8"], deny: ["10.0.5.0/24"] },
+  action: "backend",
+}
+```
+
 ## Domain Matching
 
 Domain patterns use segment-based glob matching:

@@ -20,7 +20,7 @@ Routes can distribute requests across multiple upstream targets using a `balance
 
 | Field      | Type     | Required | Description                                                      |
 | ---------- | -------- | -------- | ---------------------------------------------------------------- |
-| `type`     | string   | ✓        | Balancing strategy: `"roundrobin"`, `"random"`, or `"leastconn"` |
+| `type`     | string   | ✓        | Balancing strategy: `"roundrobin"`, `"random"`, `"leastconn"`, or `"iphash"` |
 | `targets`  | string[] | ✓        | List of upstream addresses                                       |
 | `fallback` | bool     |          | Pick a random target from all groups when the key has no match   |
 | `eject`    | duration |          | How long a target that refused a connection is skipped. Default `"10s"`; `"0s"` disables [ejection](#failed-targets) |
@@ -32,6 +32,9 @@ Routes can distribute requests across multiple upstream targets using a `balance
 | `roundrobin` | Distributes requests evenly in order across targets. Lock-free, O(1). |
 | `random`     | Selects a target at random per request.                               |
 | `leastconn`  | Routes to the target with the fewest active connections.              |
+| `iphash`     | Keeps each client IP on one target. A pool change moves only the clients of the targets that changed. |
+
+For locality-aware selection, group targets by region with a plugin's `set_targets` and choose the group from a domain wildcard or the plugin's `group` result. With `fallback: true`, a region without available targets falls back to the others.
 
 ## The `{target}` Template
 

@@ -39,6 +39,7 @@ A service defines a listener with routing rules. Services can be defined inline 
       tls: true,               // optional, default: false
       tls_cert: "/path/cert",  // required if tls: true (unless acme is set)
       tls_key: "/path/key",    // required if tls: true (single-file mode)
+      strict_sni: true,        // optional, default: false. Fail handshakes without a matching certificate
       acme: {},                // optional, automatic certificates via ACME
       h2: false,               // optional, default: true. Set false for WebSocket
       config: {},              // optional, per-service tuning

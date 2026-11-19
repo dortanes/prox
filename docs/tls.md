@@ -43,8 +43,33 @@ Point `tls_cert` to a directory instead of a single file. prox discovers all cer
 
 When `tls_cert` is a directory, `tls_key` is not required. prox scans for `.crt` and `.pem` files and automatically pairs each with its corresponding `.key` file (matched by filename). The correct certificate is selected at runtime via SNI — the TLS ClientHello indicates which domain the client is connecting to, and prox serves the matching certificate.
 
-!!! tip
-    Directory mode is ideal for multi-domain setups. Drop new certificate pairs into the directory and reload — no config changes needed.
+The directory may be empty or not exist yet: the service starts, and handshakes fail until certificates arrive.
+
+### Replacing Certificates
+
+Certificate files are read at startup and on every reload. They are not watched, so after changing them trigger a reload with `SIGHUP` or `POST /api/reload`. New handshakes get the new certificates and open connections stay up.
+
+Write the certificate and key before reloading. If any pair is invalid or has no key, the whole reload fails and the previous configuration and certificates keep serving.
+
+### Strict SNI
+
+A hostname without a matching certificate normally receives the first loaded certificate, in file name order. Set `strict_sni: true` to fail the handshake instead, so no unrelated certificate is presented. Clients that send no SNI are rejected too.
+
+```json5
+{
+  services: {
+    web: {
+      listen: ":443",
+      tls: true,
+      tls_cert: "/etc/prox/certs/",
+      strict_sni: true,
+      routes: [...]
+    },
+  },
+}
+```
+
+With ACME on the service, names no manual certificate covers go to ACME, with or without `strict_sni`.
 
 ## Automatic Certificates (ACME)
 

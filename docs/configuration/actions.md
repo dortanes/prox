@@ -11,6 +11,8 @@ Actions define the behavior executed when a route matches. Actions can be refere
 | `rewrite`  | string |          | Replace the incoming request path entirely               |
 | `timeout`  | string |          | `"5s"`, `"30s"`, `"1m"`                                  |
 | `headers`  | object |          | Extra headers to send to upstream                        |
+| `response_headers` | object | | Headers to set on responses to the client                |
+| `remove_response_headers` | array | | Headers to remove from responses to the client    |
 | `fallback` | string |          | Named action to invoke when the primary action fails     |
 | `proto`    | string |          | Upstream protocol: `"h2"` for HTTP/2 cleartext (h2c)     |
 | `stream`   | bool   |          | Use raw HTTP/1.1 tunnel for bidirectional streaming       |
@@ -110,6 +112,22 @@ Headers are injected into every request forwarded to the upstream. This applies 
       Host: "public.example.com",
       "X-Forwarded-Proto": "https",
     },
+  },
+}
+```
+
+### Response headers
+
+`remove_response_headers` runs first, then `response_headers` sets its values, replacing any the upstream sent. Both apply to every response of the action, including `502` errors and `fallback` responses. A WebSocket handshake is relayed unchanged.
+
+```json5
+{
+  match: { domain: "*.**" },
+  action: {
+    type: "proxy",
+    upstream: "https://backend.internal",
+    response_headers: { "X-Frame-Options": "DENY" },
+    remove_response_headers: ["Server"],
   },
 }
 ```
@@ -236,6 +254,7 @@ Relays raw TCP connections to an upstream without TLS termination. The proxy pee
 | ---------- | ------ | -------- | -------------------------------- |
 | `type`     | string | ✓        | `"pass"`                         |
 | `upstream` | string | ✓        | `"host:port"` — TCP dial address |
+| `proxy_protocol` | string |    | Send a PROXY protocol header, `"v1"` or `"v2"`, so the upstream sees the client address. The upstream must expect it. |
 
 **Constraints:**
 
@@ -252,7 +271,7 @@ Silently closes the connection without sending a response. Useful as a catch-all
 | ------ | ------ | -------- | ----------- |
 | `type` | string | ✓        | `"drop"`    |
 
-At L7 (HTTP), the TCP connection is hijacked and closed immediately — no HTTP response is sent. At L4 (when combined with `pass` routes), the raw TCP connection is closed before the TLS handshake.
+At L7 (HTTP), the connection is closed immediately and no HTTP response is sent; on HTTP/2 only the stream is reset. On a TLS service, a route with `match.domain` and no path or method condition fails the handshake for that name. When the service also has `pass` routes, the raw TCP connection is closed before the TLS handshake.
 
 ```json5
 // Reject all unmatched domains.

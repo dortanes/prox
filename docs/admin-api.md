@@ -73,18 +73,31 @@ Triggers a synchronous configuration reload. The response indicates success or f
 
 ```json
 // Success
-{ "ok": true, "routes": 14, "services": 2 }
+{
+  "ok": true,
+  "routes": 14,
+  "services": 2,
+  "applied": ["service \"web\": routes, actions, certificates", "plugins"],
+  "restart_required": ["service \"web\": config.max_connections"]
+}
 
 // Error
-{ "ok": false, "error": "service \"web\" route #3: action \"api\" not found in actions" }
+{
+  "ok": false,
+  "error": "service \"web\" route #3: action \"api\" not found in actions",
+  "applied": [],
+  "restart_required": []
+}
 ```
+
+`restart_required` lists settings that differ from the ones the process started with and keep their old value until a restart: added or removed services, `listen`, `tls`, `h2`, ACME account settings, `read_timeout`, `write_timeout`, `idle_timeout`, `max_connections`, `admin`, `logging.level`, and `logging.error_log`.
 
 !!! tip
     Unlike SIGHUP or file-watcher reloads, the admin API reload is synchronous — you get the result in the response. A mutex prevents concurrent reloads from any source.
 
 ### `GET /api/certs`
 
-Returns the status of all ACME-managed certificates.
+Returns the loaded manual certificates and all ACME-managed certificates. `source` is the certificate file or `acme`, and `serial` is hexadecimal.
 
 ```json
 [
@@ -92,18 +105,32 @@ Returns the status of all ACME-managed certificates.
     "domain": "api.example.com",
     "status": "active",
     "expires": "2026-08-29T12:00:00Z",
-    "issuer": "Let's Encrypt"
+    "issuer": "Let's Encrypt",
+    "names": ["api.example.com"],
+    "serial": "4a3f01",
+    "source": "acme"
+  },
+  {
+    "domain": "www.example.com",
+    "status": "active",
+    "expires": "2026-09-01T00:00:00Z",
+    "issuer": "Example CA",
+    "names": ["www.example.com", "example.com"],
+    "serial": "ff",
+    "source": "/etc/prox/certs/example.com.crt"
   },
   {
     "domain": "staging.example.com",
-    "status": "pending"
+    "status": "pending",
+    "source": "acme"
   }
 ]
 ```
 
 | Status | Meaning |
 |--------|---------|
-| `active` | Certificate is issued and cached |
+| `active` | Certificate is loaded, or issued and cached |
+| `expired` | Manual certificate is past its expiry date |
 | `pending` | Certificate is being obtained or not yet available |
 
 ### `GET /api/routes`
@@ -168,6 +195,21 @@ Returns the current state of all route balancers, including their live target po
 
 !!! tip "Service Discovery"
     This endpoint is particularly useful for verifying that plugin-managed targets are correctly registered and active.
+
+### `GET /api/metrics`
+
+Returns traffic counters per route and per upstream since the process started. Counting is active only when the `admin` block is configured. `errors` counts `5xx` responses, aborted requests, and failed `pass` connections. The table keeps up to 4096 upstreams.
+
+```json
+{
+  "routes": [
+    { "id": "web:api", "active": 2, "requests": 1200, "errors": 3, "bytes_in": 52000, "bytes_out": 910000 }
+  ],
+  "upstreams": [
+    { "id": "de-1:8080", "active": 1, "requests": 600, "errors": 1, "bytes_in": 26000, "bytes_out": 455000 }
+  ]
+}
+```
 
 ### `GET /api/config`
 

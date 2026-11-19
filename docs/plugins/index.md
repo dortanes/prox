@@ -110,8 +110,11 @@ Plugins from all levels are merged per route in this order: **service → action
 |-------|------|---------|-------------|
 | `plugins` | `[]string` | — | Plugin aliases or literal paths. Available on routes, services, and actions. |
 | `plugin_timeout` | `duration` | `5s` | Per-request timeout for plugin hook calls. Route-level only. |
+| `args` | `[]string` | — | Command-line arguments for the plugin process. Set in the `plugins` block. Changing them restarts the plugin on reload; entries with the same `path` must use the same `args`. |
 | `autostart` | `bool` | `false` | Start plugin at proxy startup without route bindings. |
 | `usage_interval` | `duration` | `15s` | How often the plugin receives `OnUsage` reports. Set in the `plugins` block. |
+
+Plugins receive routes as `service:index`, or `service:id` when the route sets an [`id`](../configuration/routing.md#route-ids).
 
 ### Rules
 
