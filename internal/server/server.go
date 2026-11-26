@@ -1368,6 +1368,11 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				for k, v := range res.Headers {
 					w.Header().Set(k, v)
 				}
+				if r.Method == http.MethodConnect && status == http.StatusOK && res.Body == "" {
+					mr.Done()
+					w.WriteHeader(status)
+					return
+				}
 				http.Error(w, res.Body, status)
 				return
 			}

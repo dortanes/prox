@@ -75,7 +75,7 @@ Called when the plugin receives route configuration (on startup and reload).
 Called for every HTTP request on the route. Returns a verdict:
 
 - `sdk.Allow(opts...)` — approve the request, optionally inject headers.
-- `sdk.Deny(status, body, opts...)` — reject with an HTTP error response.
+- `sdk.Deny(status, body, opts...)` — end the request with a local HTTP response. For CONNECT, `sdk.Deny(200, "")` completes the stream with an empty response and skips the upstream connection.
 - `sdk.Drop()` — silently close the connection (no HTTP response).
 
 ```go
@@ -203,7 +203,7 @@ p.OnUsage(func(r *sdk.UsageReport) {
 
 ```go
 sdk.Allow(opts...)                    // Approve request
-sdk.Deny(status, body, opts...)       // Reject with HTTP response
+sdk.Deny(status, body, opts...)       // Send a local HTTP response
 sdk.Fallback(opts...)                 // Route to the fallback action
 sdk.Drop()                            // Silently close connection
 

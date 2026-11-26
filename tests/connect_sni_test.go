@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	connectSNI       = "a.example.test"
-	connectAuthority = "target.example:443"
+	connectSNI            = "a.example.test"
+	connectAuthority      = "target.example:443"
+	localConnectAuthority = "local.example:443"
 )
 
 // TestConnect_RoutesBySNI checks that a CONNECT over TLS is routed by the SNI,
@@ -127,6 +128,33 @@ func TestConnect_RoutesBySNI(t *testing.T) {
 		}
 		return disconnects == requests
 	})
+
+	t.Run("local HTTP/2 CONNECT response", func(t *testing.T) {
+		tr := connectHTTP2Transport(dispatchedAddr, roots)
+		defer tr.CloseIdleConnections()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		pr, pw := io.Pipe()
+		defer pw.Close()
+		req := (&http.Request{
+			Method: http.MethodConnect,
+			URL:    &url.URL{Scheme: "https", Host: localConnectAuthority},
+			Header: make(http.Header),
+			Body:   pr,
+		}).WithContext(ctx)
+		resp, err := tr.RoundTrip(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK || len(body) != 0 {
+			t.Fatalf("CONNECT response = %d %q, want 200 with an empty body", resp.StatusCode, body)
+		}
+	})
 }
 
 // connectRequest returns the on_request payload the probe recorded for id.
@@ -167,17 +195,21 @@ func connectHTTP1(addr string, roots *x509.CertPool, id string) error {
 	return echoPing(conn, br)
 }
 
-// connectHTTP2 opens a CONNECT stream over HTTP/2 and echoes a few bytes through it.
-func connectHTTP2(addr string, roots *x509.CertPool, id string) error {
+func connectHTTP2Transport(addr string, roots *x509.CertPool) *http.Transport {
 	h2Only := new(http.Protocols)
 	h2Only.SetHTTP2(true)
-	tr := &http.Transport{
+	return &http.Transport{
 		Protocols: h2Only,
 		DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			d := tls.Dialer{Config: connectTLSConfig(roots, "h2")}
 			return d.DialContext(ctx, "tcp", addr)
 		},
 	}
+}
+
+// connectHTTP2 opens a CONNECT stream over HTTP/2 and echoes a few bytes through it.
+func connectHTTP2(addr string, roots *x509.CertPool, id string) error {
+	tr := connectHTTP2Transport(addr, roots)
 	defer tr.CloseIdleConnections()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

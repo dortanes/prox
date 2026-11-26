@@ -220,6 +220,8 @@ prox sends a hook only to plugins that declared it in `ready`. Payloads gain key
 | Target | `tg` | `string` |
 | Session | `se` | `string` |
 
+For CONNECT, `ok: false`, `s: 200`, and an omitted or empty `b` complete the request at prox. The response has an empty body and prox releases the selected target without opening an upstream connection.
+
 `se` tags the stream with a session key for `on_usage`, `on_disconnect` and `drop_sessions`. When several plugins return one, the last non-empty key wins.
 
 **SpeedLimit object (`sp`):**

@@ -124,6 +124,10 @@ func serveProbe(c net.Conn, send func(any), record func(probeEvent)) {
 			var req plugin.RequestInfo
 			_ = msgpack.Unmarshal(env.Data, &req)
 			record(probeEvent{Request: &req})
+			if req.Method == "CONNECT" && req.Host == localConnectAuthority {
+				reply = plugin.AuthorizeResult{Status: 200}
+				break
+			}
 			if drop := req.Headers["X-Drop"]; drop != "" {
 				send(plugin.Push{Method: plugin.MethodDropSessions, Params: plugin.PushParams{
 					Sessions: strings.Split(drop, ","),
