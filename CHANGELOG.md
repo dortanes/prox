@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/dortanes/prox/compare/v1.4.0...v1.4.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **server:** 🐛 send empty local CONNECT replies ([508984c](https://github.com/dortanes/prox/commit/508984c711ce8ef793e96b7edc5e1a1058b1f196))
+
 ## [1.4.0](https://github.com/dortanes/prox/compare/v1.3.0...v1.4.0) (2026-11-19)
 
 
